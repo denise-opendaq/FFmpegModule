@@ -64,9 +64,20 @@ uint64_t CameraDriver::packetPtsToNs(int64_t pts, int num, int den)
     return static_cast<uint64_t>(seconds * 1'000'000'000.0 + 0.5);
 }
 
+int CameraDriver::interruptCallback(void* opaque)
+{
+    return static_cast<CameraDriver*>(opaque)->interruptRequested.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+void CameraDriver::requestInterrupt()
+{
+    interruptRequested.store(true, std::memory_order_relaxed);
+}
+
 bool CameraDriver::open(const std::string& devicePath)
 {
     close();
+    interruptRequested.store(false, std::memory_order_relaxed);
 
     const bool isNetworkStream = isNetworkCameraPath(devicePath);
 
@@ -87,6 +98,8 @@ bool CameraDriver::open(const std::string& devicePath)
         return false;
 
     rawCtx->flags |= AVFMT_FLAG_NONBLOCK;
+    rawCtx->interrupt_callback.callback = &CameraDriver::interruptCallback;
+    rawCtx->interrupt_callback.opaque = this;
 
     AVDictionary* options = nullptr;
     if (isNetworkStream)

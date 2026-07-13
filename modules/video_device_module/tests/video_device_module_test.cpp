@@ -115,7 +115,7 @@ TEST(VideoDeviceModuleTest, GetCameraPathRoundTripsConnectionString)
 TEST(VideoDeviceModuleTest, GetCameraPathRoundTripsIpConnectionString)
 {
     const std::string streamUrl = "rtsp://192.168.1.50:554/stream1";
-    const std::string connectionString = fmt::format("{}://ip/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl);
+    const std::string connectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl);
 
     const std::string path = CameraDeviceImpl::GetCameraPath(connectionString);
     ASSERT_EQ(path, streamUrl);
@@ -129,7 +129,51 @@ TEST(VideoDeviceModuleTest, CreateDeviceInfoForIpCameraDoesNotRequireEnumeration
     const auto info = CameraDeviceImpl::CreateDeviceInfo(streamUrl);
     ASSERT_TRUE(info.assigned());
     ASSERT_EQ(info.getConnectionString(),
-              fmt::format("{}://ip/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl));
+              fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl));
     ASSERT_EQ(info.getName(), streamUrl);
 }
-// rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream
+
+TEST(VideoDeviceModuleTest, IpCameraStreamProducesFrames)
+{
+    // A real public RTSP stream, used here purely as connectivity fixture. Skips rather than
+    // fails if it's unreachable (no network in this environment, or the stream went down)
+    // since this is an external dependency, not something this module controls.
+    const std::string streamUrl = "rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream";
+
+    const auto context = createContext();
+    const auto device = createWithImplementation<IDevice, CameraDeviceImpl>(
+        StringPtr(streamUrl), CameraDeviceImpl::CreateDefaultDeviceConfig(), context, nullptr, "IpCamera", "IpCamera");
+
+    if (device.getStatusContainer().getStatus("ComponentStatus") != ComponentStatus::Ok)
+        GTEST_SKIP() << "IP camera stream not reachable: " << streamUrl;
+
+    SignalConfigPtr rawVideoSignal;
+    for (const auto& ch : device.getChannels())
+    {
+        for (const auto& sig : ch.getSignals())
+        {
+            if (sig.getLocalId() == "Video_Physical")
+                rawVideoSignal = sig;
+        }
+    }
+    ASSERT_TRUE(rawVideoSignal.assigned());
+
+    auto monitorPort = InputPort(context, nullptr, "monitor");
+    monitorPort.connect(rawVideoSignal);
+
+    bool receivedData = false;
+    for (int i = 0; i < 100 && !receivedData; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (const auto& packet : monitorPort.getConnection().dequeueAll())
+        {
+            if (packet.getType() == PacketType::Data)
+            {
+                receivedData = true;
+                break;
+            }
+        }
+    }
+
+    ASSERT_TRUE(receivedData);
+}

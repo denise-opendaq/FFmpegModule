@@ -18,6 +18,7 @@
 
 #include <video_device_module/common.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -72,6 +73,10 @@ public:
     size_t readFrames(size_t maxCount, std::vector<CapturedFrame>& out);
     void flushBuffer(size_t maxFrames);
 
+    // Aborts any in-flight (or future, until the next open()) blocking read/connect, e.g. a
+    // stalled network read on an RTSP source. Safe to call from any thread.
+    void requestInterrupt();
+
 private:
     using AVFormatContextPtr = std::unique_ptr<AVFormatContext, void (*)(AVFormatContext*)>;
     using AVPacketPtr = std::unique_ptr<AVPacket, void (*)(AVPacket*)>;
@@ -82,11 +87,13 @@ private:
 
     static std::string formatNativeCodecName(int codecId, int pixelFormat);
     static uint64_t packetPtsToNs(int64_t pts, int num, int den);
+    static int interruptCallback(void* opaque);
 
     AVFormatContextPtr fmtCtx{nullptr, avformat_free_context_deleter};
     AVPacketPtr readPacket{nullptr, av_packet_free_deleter};
     CameraStreamInfo streamInfo;
     int streamIndex{-1};
+    std::atomic<bool> interruptRequested{false};
 };
 
 END_NAMESPACE_VIDEO_DEVICE_MODULE

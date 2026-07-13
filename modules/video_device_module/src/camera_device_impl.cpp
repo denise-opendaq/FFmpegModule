@@ -64,7 +64,7 @@ DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const std::string& cameraPath)
 {
     if (isNetworkCameraPath(cameraPath))
     {
-        const StringPtr connectionString = fmt::format("{}://ip/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, cameraPath);
+        const StringPtr connectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, cameraPath);
 
         auto deviceInfo = DeviceInfo(connectionString, cameraPath);
         deviceInfo.setModel(cameraPath);
@@ -90,15 +90,19 @@ DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const std::string& cameraPath)
 
 std::string CameraDeviceImpl::GetCameraPath(const std::string& connectionString)
 {
-    const std::string ipPrefix = fmt::format("{}://ip/", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX);
-    if (connectionString.find(ipPrefix) == 0)
-        return connectionString.substr(ipPrefix.length());
+    const std::string typePrefix = fmt::format("{}://", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX);
+    if (connectionString.find(typePrefix) != 0)
+        DAQ_THROW_EXCEPTION(InvalidParameterException, "Invalid connection string prefix for connection string '{}'", connectionString);
 
-    const std::string devicePrefix = fmt::format("{}://device", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX);
-    if (connectionString.find(devicePrefix) == 0)
-        return connectionString.substr(devicePrefix.length());
+    const std::string remainder = connectionString.substr(typePrefix.length());
 
-    DAQ_THROW_EXCEPTION(InvalidParameterException, "Invalid connection string prefix for connection string '{}'", connectionString);
+    // Local devices use an explicit "device" marker (e.g. "camera://device/dev/video0");
+    // anything else is already a full stream URL (e.g. "camera://rtsp://host/stream").
+    const std::string deviceMarker = "device";
+    if (remainder.rfind(deviceMarker, 0) == 0)
+        return remainder.substr(deviceMarker.length());
+
+    return remainder;
 }
 
 DeviceInfoPtr CameraDeviceImpl::onGetInfo()
@@ -318,6 +322,9 @@ void CameraDeviceImpl::stopSelfClock()
         stopSelfClockRequested = true;
     }
     selfClockCv.notify_one();
+    // Network sources (RTSP/...) can block for a while inside generatePacket()'s frame read;
+    // interrupt it so join() below doesn't wait on however long that read would otherwise take.
+    driver.requestInterrupt();
     selfClockThread.join();
 }
 
@@ -329,15 +336,21 @@ void CameraDeviceImpl::selfClockLoop()
             ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<Float>(1.0f / frameRateHz))
             : std::chrono::seconds(1);
 
-    auto lock = getUniqueLock();
     auto nextTick = std::chrono::steady_clock::now();
 
-    while (!stopSelfClockRequested)
+    while (true)
     {
-        nextTick += framePeriod;
-        selfClockCv.wait_until(lock, nextTick, [this] { return stopSelfClockRequested; });
-        if (stopSelfClockRequested)
-            break;
+        {
+            // Only hold the device lock while waiting/checking the stop flag: generatePacket()
+            // below can block on network I/O, and must not do so while holding this lock, or
+            // stopSelfClock() (called from the destructor, on another thread) would deadlock
+            // trying to acquire the same lock just to request the stop.
+            auto lock = getUniqueLock();
+            nextTick += framePeriod;
+            selfClockCv.wait_until(lock, nextTick, [this] { return stopSelfClockRequested; });
+            if (stopSelfClockRequested)
+                break;
+        }
 
         generatePacket(1);
     }

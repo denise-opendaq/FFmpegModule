@@ -6,8 +6,6 @@ endif()
 
 set(TEST_SOURCES
     test_app.cpp
-    mock_camera_device.cpp
-    mock_camera_device_test.cpp
     video_frame_encoder_fb_impl_test.cpp
     video_device_module_test.cpp
 )

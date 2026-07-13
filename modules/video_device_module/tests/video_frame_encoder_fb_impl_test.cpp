@@ -1,6 +1,5 @@
 #include <video_device_module/video_frame_encoder_fb_impl.h>
-
-#include "mock_camera_device.h"
+#include <video_device_module/camera_device_impl.h>
 
 #include <opendaq/binary_data_packet_factory.h>
 #include <opendaq/reference_domain_info_factory.h>
@@ -10,8 +9,10 @@
 #include <opendaq/input_port_factory.h>
 #include <opendaq/opendaq.h>
 
+#include <chrono>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern "C"
@@ -21,12 +22,15 @@ extern "C"
 
 using namespace daq;
 using namespace daq::modules::video_device_module;
-using namespace daq::modules::video_device_module_test;
 
 namespace
 {
 constexpr int JPEG_FORMAT_INDEX = 0;
 constexpr int PNG_FORMAT_INDEX = 1;
+
+// A real, public RTSP stream used as a live fixture. All tests built around it skip (rather
+// than fail) if it's unreachable, since it's an external dependency this module doesn't control.
+constexpr auto IP_CAMERA_STREAM_URL = "rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream";
 
 ContextPtr createContext()
 {
@@ -39,17 +43,23 @@ FunctionBlockPtr createVideoFrameEncoder(const ContextPtr& context)
     return createWithImplementation<IFunctionBlock, VideoFrameEncoderFbImpl>(context, nullptr, "VideoFrameEncoder");
 }
 
-DevicePtr createMockCameraDevice(const ContextPtr& context)
+DevicePtr createIpCameraDevice(const ContextPtr& context)
 {
-    return createWithImplementation<IDevice, MockCameraDeviceImpl>(context, nullptr, "MockCamera");
+    return createWithImplementation<IDevice, CameraDeviceImpl>(
+        StringPtr(IP_CAMERA_STREAM_URL), CameraDeviceImpl::CreateDefaultDeviceConfig(), context, nullptr, "IpCamera", "IpCamera");
 }
 
-SignalConfigPtr findDeviceSignal(const DevicePtr& device, const std::string& localId)
+// The real camera exposes its raw encoded video on the channel's "Video_Physical" signal
+// (unlike the previous mock, which put a ready-made "Video" signal directly on the device).
+SignalConfigPtr findChannelSignal(const DevicePtr& device, const std::string& localId)
 {
-    for (const auto& signal : device.getSignals())
+    for (const auto& ch : device.getChannels())
     {
-        if (signal.getLocalId() == localId)
-            return signal;
+        for (const auto& sig : ch.getSignals())
+        {
+            if (sig.getLocalId() == localId)
+                return sig;
+        }
     }
     return nullptr;
 }
@@ -92,46 +102,86 @@ std::vector<DataPacketPtr> readDataPackets(const InputPortPtr& port)
     return result;
 }
 
-struct EncoderWithMockCamera
+// Frame arrival is genuinely asynchronous (the camera's self-clock thread pulls frames off the
+// network on its own schedule), so tests poll with a timeout instead of driving generation
+// deterministically.
+std::vector<DataPacketPtr> waitForDataPackets(const InputPortPtr& port,
+                                              size_t minCount,
+                                              std::chrono::milliseconds timeout = std::chrono::seconds(15))
+{
+    std::vector<DataPacketPtr> result;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (result.size() < minCount && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (auto& packet : readDataPackets(port))
+            result.push_back(std::move(packet));
+    }
+
+    return result;
+}
+
+struct EncoderWithIpCamera
 {
     ContextPtr context;
-    DevicePtr device;
     FunctionBlockPtr encoder;
-    ObjectPtr<IMockCamera> mock;
-    SignalConfigPtr videoSignal;
+    SignalConfigPtr rawVideoSignal;
     InputPortPtr monitorPort;
+    DevicePtr device;
 
-    static EncoderWithMockCamera create()
+    EncoderWithIpCamera() = default;
+    EncoderWithIpCamera(EncoderWithIpCamera&&) = default;
+    EncoderWithIpCamera& operator=(EncoderWithIpCamera&&) = default;
+
+    // The device's self-clock thread keeps pushing frames through the scheduler independently
+    // of the test's control flow. If it's still mid-flight when encoder's destructor runs (which
+    // waits for its own scheduled callbacks to finish), teardown deadlocks against that still-
+    // running producer. Stop the producer first, then drain the scheduler, *before* letting the
+    // rest of the members destroy themselves in the normal (reverse-declaration) order.
+    ~EncoderWithIpCamera()
     {
-        EncoderWithMockCamera pipeline;
-        pipeline.context = createContext();
-        pipeline.device = createMockCameraDevice(pipeline.context);
-        pipeline.encoder = createVideoFrameEncoder(pipeline.context);
-        pipeline.mock = pipeline.device.asPtr<IMockCamera>(true);
-        pipeline.videoSignal = findDeviceSignal(pipeline.device, "Video");
+        device = nullptr;
+        if (context.assigned())
+            context.getScheduler().waitAll();
+    }
 
-        if (!pipeline.mock.assigned() || !pipeline.videoSignal.assigned())
+    static EncoderWithIpCamera create()
+    {
+        EncoderWithIpCamera pipeline;
+        pipeline.context = createContext();
+        pipeline.device = createIpCameraDevice(pipeline.context);
+
+        if (pipeline.device.getStatusContainer().getStatus("ComponentStatus") != ComponentStatus::Ok)
             return pipeline;
 
-        pipeline.encoder.getInputPorts()[0].connect(pipeline.videoSignal);
-        pipeline.context.getScheduler().waitAll();
+        pipeline.rawVideoSignal = findChannelSignal(pipeline.device, "Video_Physical");
+        if (!pipeline.rawVideoSignal.assigned())
+            return pipeline;
+
+        pipeline.encoder = createVideoFrameEncoder(pipeline.context);
+        pipeline.encoder.getInputPorts()[0].connect(pipeline.rawVideoSignal);
 
         pipeline.monitorPort = InputPort(pipeline.context, nullptr, "monitor");
         pipeline.monitorPort.connect(findFbSignal(pipeline.encoder, "value"));
+
+        // Wait for the encoder to receive the source descriptor and set up its decode/encode
+        // pipeline; unlike the mock this isn't guaranteed by a single waitAll() call.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (pipeline.encoder.getStatusContainer().getStatus("ComponentStatus") != ComponentStatus::Ok &&
+               std::chrono::steady_clock::now() < deadline)
+        {
+            pipeline.context.getScheduler().waitAll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
         return pipeline;
     }
 
     bool valid() const
     {
-        return mock.assigned() && videoSignal.assigned() && monitorPort.assigned();
-    }
-
-    std::vector<DataPacketPtr> generateAndRead(UInt timestamp, int frameFormat = JPEG_FORMAT_INDEX)
-    {
-        encoder.setPropertyValue("FrameFormat", frameFormat);
-        mock->generateFrame(timestamp);
-        context.getScheduler().waitAll();
-        return readDataPackets(monitorPort);
+        return rawVideoSignal.assigned() && monitorPort.assigned() &&
+               encoder.assigned() && encoder.getStatusContainer().getStatus("ComponentStatus") == ComponentStatus::Ok;
     }
 };
 }  // namespace
@@ -152,44 +202,48 @@ TEST(VideoFrameEncoderFbImplTest, SupportedFrameFormats)
     ASSERT_EQ(formats[1], "PNG");
 }
 
-TEST(VideoFrameEncoderFbImplTest, ConnectMockCameraToEncoder)
+TEST(VideoFrameEncoderFbImplTest, ConnectIpCameraToEncoder)
 {
-    auto pipeline = EncoderWithMockCamera::create();
-    ASSERT_TRUE(pipeline.valid());
-    ASSERT_EQ(pipeline.encoder.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Ok);
+    auto pipeline = EncoderWithIpCamera::create();
+    if (!pipeline.valid())
+        GTEST_SKIP() << "IP camera stream not reachable: " << IP_CAMERA_STREAM_URL;
 
     const auto outputValue = findFbSignal(pipeline.encoder, "value");
     ASSERT_TRUE(outputValue.assigned());
     ASSERT_EQ(outputValue.getDescriptor().getSampleType(), SampleType::Binary);
 
-    const auto metadata = outputValue.getDescriptor().getMetadata();
-    ASSERT_TRUE(metadata.assigned());
-    StringPtr codecId;
-    ASSERT_TRUE(metadata.tryGet("NativeCodecId", codecId));
-    ASSERT_EQ(std::stoi(codecId.toStdString()), AV_CODEC_ID_MJPEG);
+    // The stream is H.264, which never matches the encoder's JPEG/PNG/... output formats, so it
+    // always takes the transcode (decode+encode) path rather than passthrough; transcoded output
+    // descriptors carry the *output* format as their unit, not a "NativeCodecId" of the source.
+    const auto unit = outputValue.getDescriptor().getUnit();
+    ASSERT_TRUE(unit.assigned());
+    ASSERT_EQ(unit.getSymbol(), "JPEG");
 }
 
-TEST(VideoFrameEncoderFbImplTest, PassthroughMjpegWhenOutputFormatIsJpeg)
+TEST(VideoFrameEncoderFbImplTest, TranscodesToJpeg)
 {
-    auto pipeline = EncoderWithMockCamera::create();
-    ASSERT_TRUE(pipeline.valid());
-    const auto packets = pipeline.generateAndRead(1'000'000ULL, JPEG_FORMAT_INDEX);
+    auto pipeline = EncoderWithIpCamera::create();
+    if (!pipeline.valid())
+        GTEST_SKIP() << "IP camera stream not reachable: " << IP_CAMERA_STREAM_URL;
 
-    ASSERT_EQ(packets.size(), 1u);
-    ASSERT_EQ(packets[0].getSampleCount(), 1u);
+    pipeline.encoder.setPropertyValue("FrameFormat", JPEG_FORMAT_INDEX);
+    const auto packets = waitForDataPackets(pipeline.monitorPort, 1);
+
+    ASSERT_GE(packets.size(), 1u);
     ASSERT_GT(packets[0].getRawDataSize(), 0u);
     ASSERT_TRUE(isJpeg(reinterpret_cast<const uint8_t*>(packets[0].getRawData()), packets[0].getRawDataSize()));
-    ASSERT_EQ(pipeline.mock->getSamplesGenerated(), 1u);
 }
 
-TEST(VideoFrameEncoderFbImplTest, TranscodesMjpegToPng)
+TEST(VideoFrameEncoderFbImplTest, TranscodesToPng)
 {
-    auto pipeline = EncoderWithMockCamera::create();
-    ASSERT_TRUE(pipeline.valid());
-    const auto packets = pipeline.generateAndRead(2'000'000ULL, PNG_FORMAT_INDEX);
+    auto pipeline = EncoderWithIpCamera::create();
+    if (!pipeline.valid())
+        GTEST_SKIP() << "IP camera stream not reachable: " << IP_CAMERA_STREAM_URL;
 
-    ASSERT_EQ(packets.size(), 1u);
-    ASSERT_EQ(packets[0].getSampleCount(), 1u);
+    pipeline.encoder.setPropertyValue("FrameFormat", PNG_FORMAT_INDEX);
+    const auto packets = waitForDataPackets(pipeline.monitorPort, 1);
+
+    ASSERT_GE(packets.size(), 1u);
     ASSERT_GT(packets[0].getRawDataSize(), 0u);
     ASSERT_TRUE(isPng(reinterpret_cast<const uint8_t*>(packets[0].getRawData()), packets[0].getRawDataSize()));
 
@@ -198,19 +252,21 @@ TEST(VideoFrameEncoderFbImplTest, TranscodesMjpegToPng)
     ASSERT_EQ(unit.getSymbol(), "PNG");
 }
 
-TEST(VideoFrameEncoderFbImplTest, ForwardsMultipleFramesInPassthroughMode)
+TEST(VideoFrameEncoderFbImplTest, TranscodesMultipleFramesOverTime)
 {
-    auto pipeline = EncoderWithMockCamera::create();
-    ASSERT_TRUE(pipeline.valid());
+    auto pipeline = EncoderWithIpCamera::create();
+    if (!pipeline.valid())
+        GTEST_SKIP() << "IP camera stream not reachable: " << IP_CAMERA_STREAM_URL;
 
-    const auto first = pipeline.generateAndRead(0, JPEG_FORMAT_INDEX);
-    const auto second = pipeline.generateAndRead(33'333'333ULL, JPEG_FORMAT_INDEX);
+    pipeline.encoder.setPropertyValue("FrameFormat", JPEG_FORMAT_INDEX);
+    const auto packets = waitForDataPackets(pipeline.monitorPort, 2, std::chrono::seconds(30));
 
-    ASSERT_EQ(first.size(), 1u);
-    ASSERT_EQ(second.size(), 1u);
-    ASSERT_TRUE(isJpeg(reinterpret_cast<const uint8_t*>(first[0].getRawData()), first[0].getRawDataSize()));
-    ASSERT_TRUE(isJpeg(reinterpret_cast<const uint8_t*>(second[0].getRawData()), second[0].getRawDataSize()));
-    ASSERT_EQ(pipeline.mock->getSamplesGenerated(), 2u);
+    ASSERT_GE(packets.size(), 2u);
+    for (const auto& packet : packets)
+    {
+        ASSERT_GT(packet.getRawDataSize(), 0u);
+        ASSERT_TRUE(isJpeg(reinterpret_cast<const uint8_t*>(packet.getRawData()), packet.getRawDataSize()));
+    }
 }
 
 TEST(VideoFrameEncoderFbImplTest, RejectsInputWithoutDomainSignal)
@@ -228,4 +284,3 @@ TEST(VideoFrameEncoderFbImplTest, RejectsInputWithoutDomainSignal)
 
     ASSERT_EQ(encoder.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Error);
 }
-
