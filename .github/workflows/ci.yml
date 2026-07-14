@@ -78,7 +78,28 @@ jobs:
         run: cmake --build build/output --config "${{ matrix.build_type }}"
 
       - name: Run project tests with CMake
+        id: run_tests
         run: ctest --test-dir build/output --output-on-failure -C "${{ matrix.build_type }}"
+
+      # Temporary diagnostic: ctest only reports "SegFault" with no stack trace, and the
+      # TranscodesToJpeg crash hasn't reproduced under gdb/valgrind on other architectures, so
+      # capture a real backtrace from the environment where it actually happens instead of
+      # guessing blind. Remove once the crash is understood and fixed.
+      - name: On test failure (Linux), re-run the crashing binary under gdb for a backtrace
+        if: matrix.os == 'ubuntu-latest' && steps.run_tests.outcome == 'failure'
+        run: |
+          command -v gdb >/dev/null || sudo apt-get install -y --no-install-recommends gdb
+          test_bin=$(find build/output -maxdepth 6 -type f -name test_video_device_module | head -1)
+          if [ -z "$test_bin" ]; then
+            echo "test_video_device_module binary not found, skipping gdb diagnostics"
+            exit 0
+          fi
+          echo "Re-running $test_bin under gdb to capture a backtrace..."
+          gdb -q -batch \
+            -ex run \
+            -ex "thread apply all bt full" \
+            -ex quit \
+            --args "$test_bin"
 
   install-build-and-test:
     strategy:
