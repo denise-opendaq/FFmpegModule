@@ -96,6 +96,7 @@ ExternalProject_Add(ffmpeg_build
       --disable-programs
       --disable-doc
       --disable-everything
+      --disable-libdrm
 
       --enable-avdevice
       --enable-avformat
