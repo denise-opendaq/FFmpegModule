@@ -70,6 +70,15 @@ public:
 
     const AVCodecParameters* getCodecParameters() const;
 
+    // Human-readable reason the last open() call failed (empty if it succeeded). Combines the
+    // libavformat/libavdevice error code with the underlying backend's own log line (e.g. the
+    // HRESULT-derived message dshow logs when it can't build its capture graph), since the
+    // error code alone is often just a generic "unknown error".
+    const std::string& getLastError() const
+    {
+        return lastError;
+    }
+
     size_t readFrames(size_t maxCount, std::vector<CapturedFrame>& out);
     void flushBuffer(size_t maxFrames);
 
@@ -94,6 +103,7 @@ private:
     CameraStreamInfo streamInfo;
     int streamIndex{-1};
     std::atomic<bool> interruptRequested{false};
+    std::string lastError;
 };
 
 END_NAMESPACE_VIDEO_DEVICE_MODULE

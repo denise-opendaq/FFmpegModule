@@ -29,7 +29,7 @@ CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
     initComponentStatus();
     if (!driver.open(this->cameraPath))
     {
-        setComponentStatusWithMessage(ComponentStatus::Error, "Failed to open camera driver");
+        setComponentStatusWithMessage(ComponentStatus::Error, fmt::format("Failed to open camera driver: {}", driver.getLastError()));
         return;
     }
 

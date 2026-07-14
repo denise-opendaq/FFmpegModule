@@ -65,6 +65,7 @@ TEST(VideoDeviceModuleTest, GetAvailableDevicesDoesNotThrow)
     {
         ASSERT_TRUE(info.getDeviceType().assigned());
         ASSERT_EQ(info.getDeviceType().getId(), CAMERA_DEVICE_TYPE_ID);
+        std::cout << "Found camera device: " << info.getName() << " (" << info.getConnectionString() << ")" << std::endl;
 
         const std::string connectionString = info.getConnectionString();
         ASSERT_EQ(connectionString.rfind(std::string(CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX) + "://", 0), 0u);
@@ -117,7 +118,7 @@ TEST(VideoDeviceModuleTest, SelfClockGeneratesFramesWithoutRootDevice)
     // createContext() attaches no root device, so the device cannot find a parent time signal
     // and must fall back to self-clocking its own acquisition.
     const auto device = module.createDevice(localDeviceInfo.getConnectionString(), nullptr, PropertyObject());
-    ASSERT_EQ(device.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Ok);
+    ASSERT_EQ(device.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Ok) << "Local camera device could not be opened: " << localDeviceInfo.getConnectionString();
 
     SignalConfigPtr rawVideoSignal;
     for (const auto& ch : device.getChannels())
