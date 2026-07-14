@@ -105,11 +105,19 @@ inline DataPacketPtr binaryDataPacketFromAvPacket(const DataPacketPtr& domainPac
     const void* dataKey = packet->data;
     detail::AvPacketBindingRegistry::instance().registerBinding(dataKey, packet);
 
+    // Function argument evaluation order is unspecified, and the Deleter argument below
+    // move-constructs its capture from `packet` - if the compiler evaluates that argument
+    // before the size/data ones (observed with GCC on x86-64; not with GCC on aarch64), those
+    // would read from an already-moved-from (null) shared_ptr. Read them into locals first so
+    // there's no ordering dependency on `packet` itself.
+    const auto size = static_cast<UInt>(packet->size);
+    auto* const data = packet->data;
+
     return BinaryDataPacketWithExternalMemory(
         domainPacket,
         descriptor,
-        static_cast<UInt>(packet->size),
-        packet->data,
+        size,
+        data,
         Deleter([packet = std::move(packet), dataKey](void*) {
             detail::AvPacketBindingRegistry::instance().unregisterBinding(dataKey);
         }));
