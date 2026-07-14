@@ -1,0 +1,24 @@
+name: CI Downstream - FFmpeg
+
+on:
+  workflow_dispatch:
+    inputs:
+      opendaq-ref:
+        description: "openDAQ SDK commit, branch or tag"
+        required: false
+        default: ""
+  pull_request:
+
+jobs:
+  call-opendaq-reusable:
+    name: FFmpeg
+    uses: openDAQ/openDAQ-CI/.github/workflows/reusable.yml@v1
+    with:
+      opendaq-ref: ${{ github.event.inputs.opendaq-ref || '' }}
+      cmake-presets: >
+        [
+          {
+            "configure-preset": "module",
+            "test-preset": "module-test"
+          }
+        ]

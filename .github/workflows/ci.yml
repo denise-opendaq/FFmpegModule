@@ -1,0 +1,174 @@
+name: Build and Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      opendaq_ref:
+        description: "openDAQ SDK commit, branch or tag"
+        required: false
+        default: ""
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            generator: Ninja
+            build_type: Debug
+          - os: ubuntu-latest
+            generator: Ninja
+            build_type: Release
+          - os: macos-latest
+            generator: Ninja
+            build_type: Debug
+          - os: macos-latest
+            generator: Ninja
+            build_type: Release
+          - os: windows-2022
+            generator: "Visual Studio 17 2022"
+            build_type: Debug
+          - os: windows-2022
+            generator: "Visual Studio 17 2022"
+            build_type: Release
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Install Linux build dependencies (FFmpeg-from-source needs a toolchain + pkg-config)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - name: Set up MSVC dev environment (Windows only)
+        if: matrix.os == 'windows-2022'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install make for the FFmpeg configure/make build (Windows only)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm make"
+          echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+
+      - name: Set up nasm (needed by FFmpeg's x86 asm optimizations)
+        uses: ilammy/setup-nasm@v1
+
+      - name: Checkout project repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.event.client_payload.branch || github.ref }}
+
+      - name: Overwrite opendaq_ref
+        if: ${{ github.event.inputs.opendaq_ref != '' }}
+        run: echo "${{ github.event.inputs.opendaq_ref }}" > opendaq_ref
+
+      - name: Configure project with CMake
+        run: cmake -B build/output -S . -G "${{ matrix.generator }}" -DDAQMODULES_FFMPEG_ENABLE_TESTS=ON -DDAQMODULES_FFMPEG_DEBUG_WARNINGS_AS_ERRORS=ON -DOPENDAQ_DEBUG_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}"
+
+      - name: Build project with CMake
+        run: cmake --build build/output --config "${{ matrix.build_type }}"
+
+      - name: Run project tests with CMake
+        run: ctest --test-dir build/output --output-on-failure -C "${{ matrix.build_type }}"
+
+  install-build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            generator: Ninja
+            build_type: Debug
+          - os: ubuntu-latest
+            generator: Ninja
+            build_type: Release
+          - os: macos-latest
+            generator: Ninja
+            build_type: Debug
+          - os: macos-latest
+            generator: Ninja
+            build_type: Release
+          - os: windows-2022
+            generator: "Visual Studio 17 2022"
+            build_type: Debug
+          - os: windows-2022
+            generator: "Visual Studio 17 2022"
+            build_type: Release
+
+    runs-on: ${{ matrix.os }}
+    env:
+      INSTALL_PREFIX: ${{ github.workspace }}/opendaq_install
+
+    steps:
+      - name: Install Linux build dependencies (FFmpeg-from-source needs a toolchain + pkg-config)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - name: Set up MSVC dev environment (Windows only)
+        if: matrix.os == 'windows-2022'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install make for the FFmpeg configure/make build (Windows only)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm make"
+          echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+
+      - name: Set up nasm (needed by FFmpeg's x86 asm optimizations)
+        uses: ilammy/setup-nasm@v1
+
+      - name: Checkout module
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.event.client_payload.branch || github.ref }}
+          path: module
+
+      - name: Overwrite opendaq_ref
+        if: ${{ github.event.inputs.opendaq_ref != '' }}
+        working-directory: module
+        run: echo "${{ github.event.inputs.opendaq_ref }}" > opendaq_ref
+
+      - name: Read openDAQ version
+        shell: bash
+        working-directory: module
+        run: |
+          opendaq_ref=$(cat opendaq_ref)
+          echo "OPENDAQ_REF=$opendaq_ref" >> $GITHUB_ENV
+
+      - name: Checkout openDAQ
+        uses: actions/checkout@v4
+        with:
+          repository: openDAQ/openDAQ
+          ref: ${{ env.OPENDAQ_REF }}
+          path: opendaq
+
+      - name: Configure, build and install openDAQ
+        working-directory: opendaq
+        run: |
+          cmake -B build/output -S . -G "${{ matrix.generator }}" -DOPENDAQ_ENABLE_TESTS=OFF -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" -DCMAKE_INSTALL_PREFIX="${{ env.INSTALL_PREFIX }}"
+          cmake --build build/output --config "${{ matrix.build_type }}"
+          cmake --install build/output --config "${{ matrix.build_type }}"
+
+      - name: Add DLL path (Windows only)
+        if: matrix.os == 'windows-2022'
+        run: echo "${{ env.INSTALL_PREFIX }}/bin" >> $env:GITHUB_PATH
+
+      - name: Configure project with CMake
+        working-directory: module
+        run: cmake -B build/output -S . -G "${{ matrix.generator }}" -DDAQMODULES_FFMPEG_ENABLE_TESTS=ON -DDAQMODULES_FFMPEG_DEBUG_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" -DopenDAQ_DIR="${{ env.INSTALL_PREFIX }}/lib/cmake/opendaq/"
+
+      - name: Build project with CMake
+        working-directory: module
+        run: cmake --build build/output --config "${{ matrix.build_type }}"
+
+      - name: Run project tests with CMake
+        working-directory: module
+        run: ctest --test-dir build/output --output-on-failure -C "${{ matrix.build_type }}"

@@ -34,6 +34,13 @@ ListPtr<IDeviceInfo> VideoDeviceModule::onGetAvailableDevices()
         if (deviceInfo.assigned())
             result.pushBack(deviceInfo);
     }
+
+    // Network cameras aren't locally enumerable like v4l2/dshow devices, so list a
+    // public RTSP stream here as an example of a valid network camera path.
+    auto exampleDeviceInfo = CameraDeviceImpl::CreateDeviceInfo("rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream");
+    if (exampleDeviceInfo.assigned())
+        result.pushBack(exampleDeviceInfo);
+
     return result;
 }
 

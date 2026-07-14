@@ -56,6 +56,10 @@
                 "lhs": "${hostSystemName}",
                 "rhs": "Windows"
             },
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
             "vendor": {
                 "microsoft.com/VisualStudioSettings/CMake/1.0": {
                     "hostOS": [ "Windows" ]
@@ -69,36 +73,6 @@
             "inherits": [
                 "msvc-17"
             ]
-        },
-        {
-            "name": "msvc-x86",
-            "hidden": true,
-            "architecture": "Win32",
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Windows"
-            },
-            "vendor": {
-                "microsoft.com/VisualStudioSettings/CMake/1.0": {
-                    "hostOS": [ "Windows" ]
-                }
-            }
-        },
-        {
-            "name": "msvc-x64",
-            "hidden": true,
-            "architecture": "x64",
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Windows"
-            },
-            "vendor": {
-                "microsoft.com/VisualStudioSettings/CMake/1.0": {
-                    "hostOS": [ "Windows" ]
-                }
-            }
         },
         {
             "name": "full",
@@ -130,43 +104,39 @@
             ]
         },
         {
-            "name": "x86/msvc-17/full",
-            "displayName": "[MSVC 17] Full - x86",
+            "name": "msvc-17/full/debug",
+            "displayName": "[MSVC 17] Full - Debug",
             "inherits": [
-                "full/release",
-                "msvc-17",
-                "msvc-x86"
+                "full/debug",
+                "msvc-17"
             ]
         },
         {
-            "name": "x64/msvc-17/full",
-            "displayName": "[MSVC 17] Full - x64",
+            "name": "msvc-17/full/release",
+            "displayName": "[MSVC 17] Full - Release",
             "inherits": [
                 "full/release",
-                "msvc-17",
-                "msvc-x64"
+                "msvc-17"
             ]
         },
         {
-            "name": "x86/msvc-22/full",
-            "displayName": "[MSVC 22] Full - x86",
+            "name": "msvc-22/full/debug",
+            "displayName": "[MSVC 22] Full - Debug",
             "inherits": [
-                "full/release",
-                "msvc-22",
-                "msvc-x86"
+                "full/debug",
+                "msvc-22"
             ]
         },
         {
-            "name": "x64/msvc-22/full",
-            "displayName": "[MSVC 22] Full - x64",
+            "name": "msvc-22/full/release",
+            "displayName": "[MSVC 22] Full - Release",
             "inherits": [
                 "full/release",
-                "msvc-22",
-                "msvc-x64"
+                "msvc-22"
             ]
         },
         {
-            "name": "x64/gcc/full/debug",
+            "name": "gcc/full/debug",
             "displayName": "[GCC] Full - Debug",
             "inherits": [
                 "full/debug",
@@ -175,7 +145,7 @@
             ]
         },
         {
-            "name": "x64/gcc/full/release",
+            "name": "gcc/full/release",
             "displayName": "[GCC] Full - Release",
             "inherits": [
                 "full/release",
@@ -184,7 +154,7 @@
             ]
         },
         {
-            "name": "x64/clang/full/debug",
+            "name": "clang/full/debug",
             "displayName": "[Clang] Full - Debug",
             "inherits": [
                 "full/debug",
@@ -193,7 +163,7 @@
             ]
         },
         {
-            "name": "x64/clang/full/release",
+            "name": "clang/full/release",
             "displayName": "[Clang] Full - Release",
             "inherits": [
                 "full/release",
@@ -202,7 +172,7 @@
             ]
         },
         {
-            "name": "x64/intel-llvm/full/debug",
+            "name": "intel-llvm/full/debug",
             "displayName": "[IntelLLVM] Full - Debug",
             "inherits": [
                 "full/debug",
@@ -211,7 +181,7 @@
             ]
         },
         {
-            "name": "x64/intel-llvm/full/release",
+            "name": "intel-llvm/full/release",
             "displayName": "[IntelLLVM] Full - Release",
             "inherits": [
                 "full/release",
@@ -223,7 +193,7 @@
             "name": "module",
             "hidden": true,
             "cacheVariables": {
-                "DAQMODULES_OPCUA_ENABLE_TESTS": "ON"
+                "DAQMODULES_FFMPEG_ENABLE_TESTS": "ON"
             }
         }
     ],
