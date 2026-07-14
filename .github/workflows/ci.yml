@@ -38,11 +38,15 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Install Linux build dependencies (FFmpeg-from-source needs a toolchain + pkg-config)
+      - name: Install Linux build dependencies (openDAQ's RTGen needs mono; FFmpeg-from-source needs a toolchain + pkg-config)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config mono-runtime libmono-system-json-microsoft4.0-cil libmono-system-data4.0-cil
+
+      - name: Install macOS build dependencies (openDAQ's RTGen needs mono)
+        if: matrix.os == 'macos-latest'
+        run: brew install mono
 
       - name: Set up MSVC dev environment (Windows only)
         if: matrix.os == 'windows-2022'
@@ -105,11 +109,15 @@ jobs:
       INSTALL_PREFIX: ${{ github.workspace }}/opendaq_install
 
     steps:
-      - name: Install Linux build dependencies (FFmpeg-from-source needs a toolchain + pkg-config)
+      - name: Install Linux build dependencies (openDAQ's RTGen needs mono; FFmpeg-from-source needs a toolchain + pkg-config)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config mono-runtime libmono-system-json-microsoft4.0-cil libmono-system-data4.0-cil
+
+      - name: Install macOS build dependencies (openDAQ's RTGen needs mono)
+        if: matrix.os == 'macos-latest'
+        run: brew install mono
 
       - name: Set up MSVC dev environment (Windows only)
         if: matrix.os == 'windows-2022'
