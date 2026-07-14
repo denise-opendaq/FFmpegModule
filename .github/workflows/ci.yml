@@ -52,16 +52,6 @@ jobs:
         if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install make for the FFmpeg configure/make build (Windows only)
-        if: matrix.os == 'windows-2022'
-        shell: pwsh
-        run: |
-          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm make"
-          echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
-
-      - name: Set up nasm (needed by FFmpeg's x86 asm optimizations)
-        uses: ilammy/setup-nasm@v1
-
       - name: Checkout project repo
         uses: actions/checkout@v4
         with:
@@ -143,16 +133,6 @@ jobs:
       - name: Set up MSVC dev environment (Windows only)
         if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install make for the FFmpeg configure/make build (Windows only)
-        if: matrix.os == 'windows-2022'
-        shell: pwsh
-        run: |
-          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm make"
-          echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
-
-      - name: Set up nasm (needed by FFmpeg's x86 asm optimizations)
-        uses: ilammy/setup-nasm@v1
 
       - name: Checkout module
         uses: actions/checkout@v4
