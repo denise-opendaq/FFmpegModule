@@ -139,12 +139,12 @@ ExternalProject_Add(ffmpeg_build
   UPDATE_DISCONNECTED TRUE
 
   BUILD_BYPRODUCTS
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}avdevice${CMAKE_STATIC_LIBRARY_SUFFIX}
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}avcodec${CMAKE_STATIC_LIBRARY_SUFFIX}
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}avformat${CMAKE_STATIC_LIBRARY_SUFFIX}
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}avutil${CMAKE_STATIC_LIBRARY_SUFFIX}
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}swscale${CMAKE_STATIC_LIBRARY_SUFFIX}
-    ${FFMPEG_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}swresample${CMAKE_STATIC_LIBRARY_SUFFIX}
+    ${FFMPEG_LIB_DIR}/libavdevice.a
+    ${FFMPEG_LIB_DIR}/libavcodec.a
+    ${FFMPEG_LIB_DIR}/libavformat.a
+    ${FFMPEG_LIB_DIR}/libavutil.a
+    ${FFMPEG_LIB_DIR}/libswscale.a
+    ${FFMPEG_LIB_DIR}/libswresample.a
 )
 
 add_library(${PROJECT_NAME} INTERFACE)
@@ -167,20 +167,16 @@ target_compile_options(${PROJECT_NAME} INTERFACE
   $<$<CXX_COMPILER_ID:MSVC>:/wd4244>
 )
 
-target_link_directories(${PROJECT_NAME} INTERFACE
-  "${FFMPEG_LIB_DIR}"
-)
-
 # Static archives are linked left-to-right, single-pass: each entry here
 # must come before the archives that define the symbols it needs, with the
 # shared base (avutil) last so it can satisfy every earlier library's wants.
 target_link_libraries(${PROJECT_NAME} INTERFACE
-  avdevice
-  avformat
-  avcodec
-  swresample
-  swscale
-  avutil
+  ${FFMPEG_LIB_DIR}/libavdevice.a
+  ${FFMPEG_LIB_DIR}/libavformat.a
+  ${FFMPEG_LIB_DIR}/libavcodec.a
+  ${FFMPEG_LIB_DIR}/libswresample.a
+  ${FFMPEG_LIB_DIR}/libswscale.a
+  ${FFMPEG_LIB_DIR}/libavutil.a
 )
 
 # With shared FFmpeg libs, these were pulled in transitively via each
