@@ -86,7 +86,7 @@ jobs:
       # capture a real backtrace from the environment where it actually happens instead of
       # guessing blind. Remove once the crash is understood and fixed.
       - name: On test failure (Linux), re-run the crashing binary under gdb for a backtrace
-        if: matrix.os == 'ubuntu-latest' && steps.run_tests.outcome == 'failure'
+        if: failure() && matrix.os == 'ubuntu-latest' && steps.run_tests.outcome == 'failure'
         run: |
           command -v gdb >/dev/null || sudo apt-get install -y --no-install-recommends gdb
           test_bin=$(find build/output -maxdepth 6 -type f -name test_video_device_module | head -1)
