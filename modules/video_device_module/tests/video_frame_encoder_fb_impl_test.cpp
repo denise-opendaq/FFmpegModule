@@ -1,11 +1,11 @@
 #include <video_device_module/video_frame_encoder_fb_impl.h>
 #include <video_device_module/camera_device_impl.h>
+#include <video_device_module/module_dll.h>
 
 #include <opendaq/binary_data_packet_factory.h>
 #include <opendaq/reference_domain_info_factory.h>
 
 #include <gtest/gtest.h>
-#include <opendaq/function_block_impl.h>
 #include <opendaq/input_port_factory.h>
 #include <opendaq/opendaq.h>
 
@@ -38,15 +38,25 @@ ContextPtr createContext()
     return Context(Scheduler(logger), logger, TypeManager(), nullptr, nullptr);
 }
 
-FunctionBlockPtr createVideoFrameEncoder(const ContextPtr& context)
+// Goes through the module's exported C entry point rather than instantiating internal
+// implementation classes directly: those aren't exported from the module's shared library
+// (visibility is hidden by default there; only the plugin's C ABI entry points are).
+ModulePtr CreateModule(const ContextPtr& context)
 {
-    return createWithImplementation<IFunctionBlock, VideoFrameEncoderFbImpl>(context, nullptr, "VideoFrameEncoder");
+    ModulePtr module;
+    createVideoDeviceModule(&module, context);
+    return module;
 }
 
-DevicePtr createIpCameraDevice(const ContextPtr& context)
+FunctionBlockPtr createVideoFrameEncoder(const ModulePtr& module)
 {
-    return createWithImplementation<IDevice, CameraDeviceImpl>(
-        StringPtr(IP_CAMERA_STREAM_URL), CameraDeviceImpl::CreateDefaultDeviceConfig(), context, nullptr, "IpCamera", "IpCamera");
+    return module.createFunctionBlock(VideoFrameEncoderFbImpl::Id, nullptr, "VideoFrameEncoder");
+}
+
+DevicePtr createIpCameraDevice(const ModulePtr& module)
+{
+    const std::string connectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, IP_CAMERA_STREAM_URL);
+    return module.createDevice(connectionString, nullptr, PropertyObject());
 }
 
 // The real camera exposes its raw encoded video on the channel's "Video_Physical" signal
@@ -125,6 +135,7 @@ std::vector<DataPacketPtr> waitForDataPackets(const InputPortPtr& port,
 struct EncoderWithIpCamera
 {
     ContextPtr context;
+    ModulePtr module;
     FunctionBlockPtr encoder;
     SignalConfigPtr rawVideoSignal;
     InputPortPtr monitorPort;
@@ -150,7 +161,8 @@ struct EncoderWithIpCamera
     {
         EncoderWithIpCamera pipeline;
         pipeline.context = createContext();
-        pipeline.device = createIpCameraDevice(pipeline.context);
+        pipeline.module = CreateModule(pipeline.context);
+        pipeline.device = createIpCameraDevice(pipeline.module);
 
         if (pipeline.device.getStatusContainer().getStatus("ComponentStatus") != ComponentStatus::Ok)
             return pipeline;
@@ -159,7 +171,7 @@ struct EncoderWithIpCamera
         if (!pipeline.rawVideoSignal.assigned())
             return pipeline;
 
-        pipeline.encoder = createVideoFrameEncoder(pipeline.context);
+        pipeline.encoder = createVideoFrameEncoder(pipeline.module);
         pipeline.encoder.getInputPorts()[0].connect(pipeline.rawVideoSignal);
 
         pipeline.monitorPort = InputPort(pipeline.context, nullptr, "monitor");
@@ -188,15 +200,22 @@ struct EncoderWithIpCamera
 
 TEST(VideoFrameEncoderFbImplTest, CreateType)
 {
-    const auto type = VideoFrameEncoderFbImpl::CreateType();
-    ASSERT_TRUE(type.assigned());
-    ASSERT_EQ(type.getId(), VideoFrameEncoderFbImpl::Id);
+    const auto module = CreateModule(createContext());
+
+    DictPtr<IString, IFunctionBlockType> types;
+    ASSERT_NO_THROW(types = module.getAvailableFunctionBlockTypes());
+    ASSERT_TRUE(types.hasKey(VideoFrameEncoderFbImpl::Id));
+
+    const FunctionBlockTypePtr type = types.get(VideoFrameEncoderFbImpl::Id);
     ASSERT_EQ(type.getName(), VideoFrameEncoderFbImpl::Name);
 }
 
 TEST(VideoFrameEncoderFbImplTest, SupportedFrameFormats)
 {
-    const auto formats = VideoFrameEncoderFbImpl::GetSupportedFrameFormats();
+    const auto module = CreateModule(createContext());
+    const auto encoder = createVideoFrameEncoder(module);
+
+    const ListPtr<IString> formats = encoder.getProperty("FrameFormat").getSelectionValues().asPtr<IList>();
     ASSERT_EQ(formats.getCount(), 6u);
     ASSERT_EQ(formats[0], "JPEG");
     ASSERT_EQ(formats[1], "PNG");
@@ -272,7 +291,8 @@ TEST(VideoFrameEncoderFbImplTest, TranscodesMultipleFramesOverTime)
 TEST(VideoFrameEncoderFbImplTest, RejectsInputWithoutDomainSignal)
 {
     const auto context = createContext();
-    const auto encoder = createVideoFrameEncoder(context);
+    const auto module = CreateModule(context);
+    const auto encoder = createVideoFrameEncoder(module);
     const auto orphanSignal = Signal(context, nullptr, "orphan");
     orphanSignal.setDescriptor(DataDescriptorBuilder()
                                    .setSampleType(SampleType::Binary)

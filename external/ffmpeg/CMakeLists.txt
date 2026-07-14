@@ -150,8 +150,21 @@ ExternalProject_Add(ffmpeg_build
 add_library(${PROJECT_NAME} INTERFACE)
 add_dependencies(${PROJECT_NAME} ffmpeg_build)
 
-target_include_directories(${PROJECT_NAME} INTERFACE
+# SYSTEM: FFmpeg's own headers (e.g. libavutil/common.h's av_clip_* clipping
+# macros) trip narrowing-conversion warnings - MSVC's C4244 in particular,
+# which our own -Werror/-WX build flag would otherwise escalate to a hard
+# error. Marking the include as SYSTEM tells the compiler these aren't our
+# warnings to fix.
+target_include_directories(${PROJECT_NAME} SYSTEM INTERFACE
   "${FFMPEG_BUILD_DIR}/include"
+)
+
+# Belt-and-suspenders: whether MSVC actually honors SYSTEM includes (i.e.
+# emits /external:I + /external:W0) depends on toolset/CMake version
+# specifics that aren't verified here, so also explicitly silence C4244 for
+# consumers of this target on MSVC.
+target_compile_options(${PROJECT_NAME} INTERFACE
+  $<$<CXX_COMPILER_ID:MSVC>:/wd4244>
 )
 
 target_link_directories(${PROJECT_NAME} INTERFACE
