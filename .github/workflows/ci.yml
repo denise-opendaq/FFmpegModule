@@ -22,6 +22,12 @@ jobs:
           - os: ubuntu-latest
             generator: Ninja
             build_type: Release
+          - os: ubuntu-24.04-arm
+            generator: Ninja
+            build_type: Debug
+          - os: ubuntu-24.04-arm
+            generator: Ninja
+            build_type: Release
           - os: macos-latest
             generator: Ninja
             build_type: Debug
@@ -39,7 +45,7 @@ jobs:
 
     steps:
       - name: Install Linux build dependencies (openDAQ's RTGen needs mono; FFmpeg-from-source needs a toolchain + pkg-config)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config mono-runtime libmono-system-json-microsoft4.0-cil libmono-system-data4.0-cil
@@ -76,7 +82,7 @@ jobs:
       # capture a real backtrace from the environment where it actually happens instead of
       # guessing blind. Remove once the crash is understood and fixed.
       - name: On test failure (Linux), re-run the crashing binary under gdb for a backtrace
-        if: failure() && matrix.os == 'ubuntu-latest' && steps.run_tests.outcome == 'failure'
+        if: failure() && startsWith(matrix.os, 'ubuntu') && steps.run_tests.outcome == 'failure'
         run: |
           command -v gdb >/dev/null || sudo apt-get install -y --no-install-recommends gdb
           test_bin=$(find build/output -maxdepth 6 -type f -name test_video_device_module | head -1)
@@ -91,6 +97,28 @@ jobs:
             -ex quit \
             --args "$test_bin"
 
+      - name: Collect video_device_module artifact
+        if: success()
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/video_device_module"
+          module_file=$(find build/output -type f \( -name 'libvideo_device_module*.module.*' -o -name 'video_device_module*.module.*' \) | head -1)
+          if [ -z "$module_file" ]; then
+            echo "::error::video_device_module binary not found under build/output"
+            exit 1
+          fi
+          echo "Found module: $module_file"
+          cp -v "$module_file" "${{ runner.temp }}/video_device_module/"
+
+      - name: Upload video_device_module
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video_device_module-${{ matrix.os }}-${{ matrix.build_type }}
+          path: ${{ runner.temp }}/video_device_module/*
+          if-no-files-found: error
+          retention-days: 14
+
   install-build-and-test:
     strategy:
       fail-fast: false
@@ -100,6 +128,12 @@ jobs:
             generator: Ninja
             build_type: Debug
           - os: ubuntu-latest
+            generator: Ninja
+            build_type: Release
+          - os: ubuntu-24.04-arm
+            generator: Ninja
+            build_type: Debug
+          - os: ubuntu-24.04-arm
             generator: Ninja
             build_type: Release
           - os: macos-latest
@@ -121,7 +155,7 @@ jobs:
 
     steps:
       - name: Install Linux build dependencies (openDAQ's RTGen needs mono; FFmpeg-from-source needs a toolchain + pkg-config)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config mono-runtime libmono-system-json-microsoft4.0-cil libmono-system-data4.0-cil
