@@ -12,8 +12,6 @@
 #include <opendaq/reference_domain_info_factory.h>
 #include <opendaq/signal_factory.h>
 
-#include <chrono>
-
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
 CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
@@ -37,13 +35,18 @@ CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
     initSignals();
     initChannels();
 
-    if (needsSelfClock)
-        startSelfClock();
+    if (!deviceTimeInputPort.assigned())
+    {
+        fallbackTimer.start(driver.getStreamInfo().frameRateHz, [this] { generatePacket(1); });
+    }
 }
 
 CameraDeviceImpl::~CameraDeviceImpl()
 {
-    stopSelfClock();
+    // Network sources (RTSP/...) can block inside generatePacket()'s frame read; interrupt
+    // that read before joining the fallback timer thread.
+    driver.requestInterrupt();
+    fallbackTimer.stop();
 }
 
 PropertyObjectPtr CameraDeviceImpl::CreateDefaultDeviceConfig()
@@ -179,7 +182,6 @@ void CameraDeviceImpl::initSignals()
 
     LOG_I("No parent time signal found, self-clocking camera acquisition instead");
     setComponentStatus(ComponentStatus::Ok);
-    needsSelfClock = true;
 }
 
 void CameraDeviceImpl::initChannels()
@@ -305,55 +307,6 @@ void CameraDeviceImpl::generatePacket(SizeT sampleCount)
 
     timeSignal.sendPacket(domainPacket);
     channel->generatePacket(domainPacket, frames);
-}
-
-void CameraDeviceImpl::startSelfClock()
-{
-    selfClockThread = std::thread(&CameraDeviceImpl::selfClockLoop, this);
-}
-
-void CameraDeviceImpl::stopSelfClock()
-{
-    if (!selfClockThread.joinable())
-        return;
-
-    {
-        auto lock = getUniqueLock();
-        stopSelfClockRequested = true;
-    }
-    selfClockCv.notify_one();
-    // Network sources (RTSP/...) can block for a while inside generatePacket()'s frame read;
-    // interrupt it so join() below doesn't wait on however long that read would otherwise take.
-    driver.requestInterrupt();
-    selfClockThread.join();
-}
-
-void CameraDeviceImpl::selfClockLoop()
-{
-    const auto frameRateHz = driver.getStreamInfo().frameRateHz;
-    const auto framePeriod =
-        frameRateHz > 0.0f
-            ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<Float>(1.0f / frameRateHz))
-            : std::chrono::seconds(1);
-
-    auto nextTick = std::chrono::steady_clock::now();
-
-    while (true)
-    {
-        {
-            // Only hold the device lock while waiting/checking the stop flag: generatePacket()
-            // below can block on network I/O, and must not do so while holding this lock, or
-            // stopSelfClock() (called from the destructor, on another thread) would deadlock
-            // trying to acquire the same lock just to request the stop.
-            auto lock = getUniqueLock();
-            nextTick += framePeriod;
-            selfClockCv.wait_until(lock, nextTick, [this] { return stopSelfClockRequested; });
-            if (stopSelfClockRequested)
-                break;
-        }
-
-        generatePacket(1);
-    }
 }
 
 uint64_t CameraDeviceImpl::onGetTicksSinceOrigin()

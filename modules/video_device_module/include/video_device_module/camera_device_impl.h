@@ -19,15 +19,13 @@
 #include <video_device_module/common.h>
 #include <video_device_module/camera_driver.h>
 #include <video_device_module/camera_channel_impl.h>
+#include <video_device_module/fallback_timer.h>
 #include <video_device_module/time_accumulator.h>
 
 #include <opendaq/device_impl.h>
 #include <opendaq/event_packet_ptr.h>
 #include <opendaq/input_port_config_ptr.h>
 #include <opendaq/packet_reader_ptr.h>
-
-#include <condition_variable>
-#include <thread>
 
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
@@ -70,12 +68,6 @@ protected:
     void handleDataPacket(const DataPacketPtr& packet);
     void generatePacket(SizeT sampleCount);
 
-    // Fallback trigger used when no parent device time signal is found: reads and
-    // publishes frames on its own timer instead of being clocked by the root domain signal.
-    void startSelfClock();
-    void stopSelfClock();
-    void selfClockLoop();
-
     void activeChanged() override;
     void onTimeOffsetChanged(Int offset);
 
@@ -97,10 +89,7 @@ private:
     Int timeOffsetNs{0};
     DeviceDomainPtr deviceDomain;
 
-    bool needsSelfClock{false};
-    std::thread selfClockThread;
-    std::condition_variable selfClockCv;
-    bool stopSelfClockRequested{false};
+    FallbackTimer fallbackTimer;
 };
 
 END_NAMESPACE_VIDEO_DEVICE_MODULE

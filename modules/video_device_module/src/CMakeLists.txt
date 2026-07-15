@@ -3,6 +3,7 @@ set(MODULE_HEADERS_DIR ../include/${TARGET_FOLDER_NAME})
 
 set(SRC_Include common.h
                 module_dll.h
+                fallback_timer.h
                 time_accumulator.h
                 video_device_module_impl.h
                 camera_channel_impl.h
@@ -13,6 +14,7 @@ set(SRC_Include common.h
 )
 
 set(SRC_Srcs module_dll.cpp
+             fallback_timer.cpp
              time_accumulator.cpp
              video_device_module_impl.cpp
              camera_device_impl.cpp
