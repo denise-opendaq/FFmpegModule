@@ -10,6 +10,10 @@ set(TEST_SOURCES
     video_device_module_test.cpp
 )
 
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    list(APPEND TEST_SOURCES video_display_fb_impl_test.cpp)
+endif()
+
 add_executable(${TEST_APP} ${TEST_SOURCES})
 
 target_include_directories(${TEST_APP} PRIVATE

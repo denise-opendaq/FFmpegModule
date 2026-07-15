@@ -12,6 +12,28 @@
 #include <opendaq/reference_domain_info_factory.h>
 #include <opendaq/signal_factory.h>
 
+extern "C"
+{
+#include <libavcodec/packet.h>
+#include <libavutil/avutil.h>
+}
+
+namespace
+{
+uint64_t streamPtsToNanoseconds(int64_t pts, const daq::RatioPtr& fromRatio, const daq::RatioPtr& toRatio)
+{
+    if (pts == AV_NOPTS_VALUE)
+        return 0;
+
+    if (!fromRatio.assigned() || !toRatio.assigned())
+        return 0;
+
+    auto convertionRatio = daq::Ratio(pts, 1) * (fromRatio / toRatio).simplify();
+
+    return static_cast<uint64_t>(convertionRatio);
+}
+}  // namespace
+
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
 CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
@@ -137,6 +159,22 @@ void CameraDeviceImpl::initProperties()
     objPtr.addProperty(timeOffsetProp);
     objPtr.getOnPropertyValueWrite("TimeOffset") +=
         [this](PropertyObjectPtr& /*obj*/, PropertyValueEventArgsPtr& args) { onTimeOffsetChanged(args.getValue()); };
+
+    objPtr.addProperty(StringPropertyBuilder("NativeFormat", "unknown").setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("NativeCodecId", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("NativePixelFormat", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("FrameWidth", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("FrameHeight", 0).setReadOnly(true).build());
+    objPtr.addProperty(FloatPropertyBuilder("FrameRate", 0.0f).setReadOnly(true).build());
+
+    const auto streamingInfo = driver.getStreamInfo();
+    auto protectedObjPtr = objPtr.asPtr<IPropertyObjectProtected>(true);
+    protectedObjPtr.setProtectedPropertyValue("NativeFormat", streamingInfo.nativeFormat);
+    protectedObjPtr.setProtectedPropertyValue("NativeCodecId", streamingInfo.nativeCodecId);
+    protectedObjPtr.setProtectedPropertyValue("NativePixelFormat", streamingInfo.nativePixelFormat);
+    protectedObjPtr.setProtectedPropertyValue("FrameWidth", streamingInfo.width);
+    protectedObjPtr.setProtectedPropertyValue("FrameHeight", streamingInfo.height);
+    protectedObjPtr.setProtectedPropertyValue("FrameRate", streamingInfo.frameRateHz);
 }
 
 void CameraDeviceImpl::initSignals()
@@ -280,23 +318,21 @@ void CameraDeviceImpl::handleDataPacket(const DataPacketPtr& packet)
 
 void CameraDeviceImpl::generatePacket(SizeT sampleCount)
 {
-    std::vector<CapturedFrame> frames;
-    frames.reserve(sampleCount);
+    std::vector<std::shared_ptr<AVPacket>> packets;
+    packets.reserve(sampleCount);
 
-    const size_t framesRead = driver.readFrames(sampleCount, frames);
+    const size_t framesRead = driver.readFrames(sampleCount, packets);
     if (framesRead == 0)
     {
-        LOG_W("No frames read from camera for {}", sampleCount);
+        // LOG_W("No frames read from camera for {}", sampleCount);
         return;
     }
 
+    const auto streamTimeRatio = driver.getStreamTimeRatio();
     const uint64_t offsetNs = static_cast<uint64_t>(timeOffsetNs);
     auto timestamps = std::make_unique<uint64_t[]>(framesRead);
     for (size_t i = 0; i < framesRead; ++i)
-    {
-        timestamps[i] = frames[i].timestampNs + offsetNs;
-        frames[i].timestampNs = timestamps[i];
-    }
+        timestamps[i] = streamPtsToNanoseconds(packets[i]->pts, streamTimeRatio, getRatio()) + offsetNs;
 
     auto domainPacket = DataPacketWithExternalMemory(
         nullptr,
@@ -306,7 +342,7 @@ void CameraDeviceImpl::generatePacket(SizeT sampleCount)
         Deleter([](void* ptr) { delete[] static_cast<uint64_t*>(ptr); }));
 
     timeSignal.sendPacket(domainPacket);
-    channel->generatePacket(domainPacket, frames);
+    channel->generatePacket(domainPacket, packets);
 }
 
 uint64_t CameraDeviceImpl::onGetTicksSinceOrigin()

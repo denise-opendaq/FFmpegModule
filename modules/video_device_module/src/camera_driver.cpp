@@ -1,6 +1,8 @@
 #include <video_device_module/camera_driver.h>
 #include <video_device_module/camera_platform.h>
 
+#include <coretypes/ratio_factory.h>
+
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
@@ -56,6 +58,40 @@ std::string describeAvError(int errnum)
 
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
+namespace
+{
+constexpr double kMaxReasonableFrameRateHz = 240.0;
+
+bool isReasonableFrameRate(const AVRational& rate)
+{
+    if (rate.num <= 0 || rate.den <= 0)
+        return false;
+
+    const double fps = av_q2d(rate);
+    return fps > 0.0 && fps <= kMaxReasonableFrameRateHz;
+}
+
+Float resolveFrameRateHz(AVFormatContext* fmtCtx, AVStream* stream)
+{
+    if (isReasonableFrameRate(stream->avg_frame_rate))
+        return static_cast<Float>(av_q2d(stream->avg_frame_rate));
+
+    if (isReasonableFrameRate(stream->r_frame_rate))
+        return static_cast<Float>(av_q2d(stream->r_frame_rate));
+
+    const AVRational guessed = av_guess_frame_rate(fmtCtx, stream, nullptr);
+    if (isReasonableFrameRate(guessed))
+        return static_cast<Float>(av_q2d(guessed));
+
+    // avfoundation reports stream time_base in microseconds (1/1'000'000). When avg/r_frame_rate
+    // are unset, av_guess_frame_rate() inverts that time_base and returns ~1e6 fps.
+    if (std::string_view(cameraInputFormatName()) == "avfoundation")
+        return 30.0f;
+
+    return 0.0f;
+}
+}  // namespace
+
 CameraDriver::CameraDriver() = default;
 
 CameraDriver::~CameraDriver()
@@ -95,15 +131,6 @@ std::string CameraDriver::formatNativeCodecName(int codecId, int pixelFormat)
         return name;
     }
     return "BINARY";
-}
-
-uint64_t CameraDriver::packetPtsToNs(int64_t pts, int num, int den)
-{
-    if (pts == AV_NOPTS_VALUE || den == 0)
-        return 0;
-
-    const auto seconds = av_q2d(AVRational{num, den}) * static_cast<double>(pts);
-    return static_cast<uint64_t>(seconds * 1'000'000'000.0 + 0.5);
 }
 
 int CameraDriver::interruptCallback(void* opaque)
@@ -218,8 +245,7 @@ bool CameraDriver::open(const std::string& devicePath)
         return false;
     }
 
-    const AVRational framerate = av_guess_frame_rate(fmtCtx.get(), stream, nullptr);
-    const Float frameRateHz = av_q2d(framerate);
+    const Float frameRateHz = resolveFrameRateHz(fmtCtx.get(), stream);
     if (frameRateHz <= 0.0f)
     {
         lastError = "could not determine a valid frame rate";
@@ -233,6 +259,8 @@ bool CameraDriver::open(const std::string& devicePath)
     streamInfo.nativeCodecId = codecpar->codec_id;
     streamInfo.nativePixelFormat = codecpar->format;
     streamInfo.nativeFormat = formatNativeCodecName(codecpar->codec_id, codecpar->format);
+
+    streamTimeRatio = Ratio(stream->time_base.num, stream->time_base.den);
 
     readPacket.reset(av_packet_alloc());
     if (!readPacket)
@@ -250,6 +278,7 @@ void CameraDriver::close()
     readPacket.reset();
     fmtCtx.reset();
     streamIndex = -1;
+    streamTimeRatio = nullptr;
     streamInfo = {};
 }
 
@@ -260,10 +289,17 @@ const AVCodecParameters* CameraDriver::getCodecParameters() const
     return fmtCtx->streams[streamIndex]->codecpar;
 }
 
-size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out)
+RatioPtr CameraDriver::getStreamTimeRatio() const
+{
+    return streamTimeRatio;
+}
+
+size_t CameraDriver::readFrames(size_t maxCount, std::vector<std::shared_ptr<AVPacket>>& out)
 {
     if (!fmtCtx || !readPacket || maxCount == 0)
         return 0;
+
+    AVStream* stream = fmtCtx->streams[streamIndex];
 
     size_t read = 0;
     while (read < maxCount)
@@ -286,7 +322,6 @@ size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out
             continue;
         }
 
-        CapturedFrame frame;
         auto framePacket = std::shared_ptr<AVPacket>(av_packet_alloc(), shared_av_packet_deleter);
         if (!framePacket)
         {
@@ -295,12 +330,7 @@ size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out
         }
 
         av_packet_move_ref(framePacket.get(), readPacket.get());
-        frame.packet = std::move(framePacket);
-
-        const AVRational timeBase = fmtCtx->streams[streamIndex]->time_base;
-        frame.timestampNs = packetPtsToNs(frame.packet->pts, timeBase.num, timeBase.den);
-
-        out.push_back(std::move(frame));
+        out.push_back(std::move(framePacket));
         ++read;
     }
 

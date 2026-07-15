@@ -1,0 +1,5 @@
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    add_subdirectory(video_preview)
+else()
+    message(STATUS "Example apps skipped: ${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY is OFF")
+endif()

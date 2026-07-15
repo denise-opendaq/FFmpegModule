@@ -3,6 +3,9 @@
 #include <video_device_module/camera_device_impl.h>
 #include <video_device_module/camera_platform.h>
 #include <video_device_module/video_frame_encoder_fb_impl.h>
+#if defined(VIDEO_DEVICE_MODULE_ENABLE_VIDEO_DISPLAY)
+#include <video_device_module/video_display_fb_impl.h>
+#endif
 #include <coretypes/version_info_factory.h>
 #include <opendaq/custom_log.h>
 
@@ -82,6 +85,10 @@ DictPtr<IString, IFunctionBlockType> VideoDeviceModule::onGetAvailableFunctionBl
     auto types = Dict<IString, IFunctionBlockType>();
     const auto encoderType = VideoFrameEncoderFbImpl::CreateType();
     types.set(encoderType.getId(), encoderType);
+#if defined(VIDEO_DEVICE_MODULE_ENABLE_VIDEO_DISPLAY)
+    const auto displayType = VideoDisplayFbImpl::CreateType();
+    types.set(displayType.getId(), displayType);
+#endif
     return types;
 }
 
@@ -92,6 +99,10 @@ FunctionBlockPtr VideoDeviceModule::onCreateFunctionBlock(const StringPtr& id,
 {
     if (id == VideoFrameEncoderFbImpl::Id)
         return createWithImplementation<IFunctionBlock, VideoFrameEncoderFbImpl>(context, parent, localId);
+#if defined(VIDEO_DEVICE_MODULE_ENABLE_VIDEO_DISPLAY)
+    if (id == VideoDisplayFbImpl::Id)
+        return createWithImplementation<IFunctionBlock, VideoDisplayFbImpl>(context, parent, localId);
+#endif
 
     LOG_W("Function block \"{}\" not found", id);
     DAQ_THROW_EXCEPTION(NotFoundException, "Function block not found");

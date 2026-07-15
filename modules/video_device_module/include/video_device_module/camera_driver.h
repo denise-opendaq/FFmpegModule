@@ -18,6 +18,8 @@
 
 #include <video_device_module/common.h>
 
+#include <coretypes/ratio_ptr.h>
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -38,12 +40,6 @@ struct CameraStreamInfo
     std::string nativeFormat;
     int nativeCodecId{0};
     int nativePixelFormat{0};
-};
-
-struct CapturedFrame
-{
-    std::shared_ptr<AVPacket> packet;
-    uint64_t timestampNs{0};
 };
 
 class CameraDriver
@@ -70,6 +66,9 @@ public:
 
     const AVCodecParameters* getCodecParameters() const;
 
+    // FFmpeg AVStream::time_base for the video stream; PTS values from readFrames() are in these units.
+    RatioPtr getStreamTimeRatio() const;
+
     // Human-readable reason the last open() call failed (empty if it succeeded). Combines the
     // libavformat/libavdevice error code with the underlying backend's own log line (e.g. the
     // HRESULT-derived message dshow logs when it can't build its capture graph), since the
@@ -79,7 +78,7 @@ public:
         return lastError;
     }
 
-    size_t readFrames(size_t maxCount, std::vector<CapturedFrame>& out);
+    size_t readFrames(size_t maxCount, std::vector<std::shared_ptr<AVPacket>>& out);
     void flushBuffer(size_t maxFrames);
 
     // Aborts any in-flight (or future, until the next open()) blocking read/connect, e.g. a
@@ -95,13 +94,13 @@ private:
     static void shared_av_packet_deleter(AVPacket* pkt);
 
     static std::string formatNativeCodecName(int codecId, int pixelFormat);
-    static uint64_t packetPtsToNs(int64_t pts, int num, int den);
     static int interruptCallback(void* opaque);
 
     AVFormatContextPtr fmtCtx{nullptr, avformat_free_context_deleter};
     AVPacketPtr readPacket{nullptr, av_packet_free_deleter};
     CameraStreamInfo streamInfo;
     int streamIndex{-1};
+    RatioPtr streamTimeRatio;
     std::atomic<bool> interruptRequested{false};
     std::string lastError;
 };

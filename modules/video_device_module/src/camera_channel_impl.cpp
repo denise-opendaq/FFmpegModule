@@ -31,20 +31,19 @@ CameraChannelImpl::CameraChannelImpl(const ContextPtr& ctx,
     initSignals(domainSignal);
 }
 
-void CameraChannelImpl::generatePacket(IDataPacket* domainPacket, std::vector<CapturedFrame>& frames)
+void CameraChannelImpl::generatePacket(IDataPacket* domainPacket, std::vector<std::shared_ptr<AVPacket>>& packets)
 {
-    if (!domainPacket || frames.empty())
+    if (!domainPacket || packets.empty())
         return;
 
     const auto valueDescriptor = rawVideoSignal.getDescriptor();
     const DataPacketPtr domainPacketPtr(domainPacket);
 
-    for (auto& frame : frames)
+    for (auto& packet : packets)
     {
-        if (!frame.packet || frame.packet->size <= 0)
+        if (!packet || packet->size <= 0)
             continue;
 
-        auto packet = std::move(frame.packet);
         rawVideoSignal.sendPacket(binaryDataPacketFromAvPacket(domainPacketPtr, valueDescriptor, std::move(packet)));
     }
 }

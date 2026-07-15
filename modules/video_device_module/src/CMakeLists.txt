@@ -1,5 +1,6 @@
 set(LIB_NAME video_device_module)
 set(MODULE_HEADERS_DIR ../include/${TARGET_FOLDER_NAME})
+set(MODULE_BINARY_HEADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/../include/${TARGET_FOLDER_NAME})
 
 set(SRC_Include common.h
                 module_dll.h
@@ -24,6 +25,15 @@ set(SRC_Srcs module_dll.cpp
              video_frame_encoder_fb_impl.cpp
 )
 
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    opendaq_embed_resource("${CMAKE_CURRENT_SOURCE_DIR}/arial.ttf"
+                           ${MODULE_BINARY_HEADER_DIR}/arial.ttf.h
+                           "ARIAL_TTF")
+    list(APPEND SRC_Include video_display_fb_impl.h)
+    list(APPEND SRC_Srcs video_display_fb_impl.cpp
+                         ${MODULE_BINARY_HEADER_DIR}/arial.ttf.h)
+endif()
+
 if(APPLE)
     list(APPEND SRC_Srcs camera_platform_macos.mm)
 endif()
@@ -37,6 +47,7 @@ source_group("module" FILES ${MODULE_HEADERS_DIR}/module_dll.h
                             ${MODULE_HEADERS_DIR}/camera_driver.h
                             ${MODULE_HEADERS_DIR}/camera_platform.h
                             ${MODULE_HEADERS_DIR}/video_frame_encoder_fb_impl.h
+                            $<$<BOOL:${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY>:${MODULE_HEADERS_DIR}/video_display_fb_impl.h>
                             module_dll.cpp
                             video_device_module_impl.cpp
                             camera_device_impl.cpp
@@ -44,6 +55,8 @@ source_group("module" FILES ${MODULE_HEADERS_DIR}/module_dll.h
                             camera_driver.cpp
                             camera_platform.cpp
                             video_frame_encoder_fb_impl.cpp
+                            $<$<BOOL:${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY>:video_display_fb_impl.cpp>
+                            $<$<BOOL:${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY>:${MODULE_BINARY_HEADER_DIR}/arial.ttf.h>
                             $<$<BOOL:${APPLE}>:camera_platform_macos.mm>
 )
 
@@ -67,6 +80,11 @@ target_link_libraries(${LIB_NAME}
 
 # Should link only what you need $<BUILD_INTERFACE:Boost::locale>
 target_link_libraries(${LIB_NAME} PRIVATE $<BUILD_INTERFACE:Boost::locale>)
+
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    target_compile_definitions(${LIB_NAME} PRIVATE VIDEO_DEVICE_MODULE_ENABLE_VIDEO_DISPLAY)
+    target_link_libraries(${LIB_NAME} PRIVATE SFML::Graphics)
+endif()
 
 if(APPLE)
     target_link_libraries(${LIB_NAME} PRIVATE "-framework AVFoundation" "-framework Foundation")
