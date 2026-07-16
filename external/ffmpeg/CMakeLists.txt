@@ -76,10 +76,19 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # placed; it doesn't need to sit next to bash, since it resolves
     # msys-2.0.dll via bash's directory already being on PATH through the
     # wrapper below.
+    # NO_DEFAULT_PATH: this must NOT fall back to searching PATH/the system -
+    # GitHub's windows-2022 runner image (and many dev machines with "choco
+    # install make" or GnuWin32 installed) already has a make.exe on PATH,
+    # and it's the broken DOS-quoting kind described above. Restricting the
+    # search to only this cache dir means the sole way FFMPEG_MAKE_EXECUTABLE
+    # gets set is either the verified-good download below, or a make.exe a
+    # human deliberately placed at this exact path (per the FATAL_ERROR
+    # message further down).
     set(FFMPEG_MAKE_CACHE_DIR "$ENV{LOCALAPPDATA}/msys2-make")
     find_program(FFMPEG_MAKE_EXECUTABLE
       NAMES make.exe make
       HINTS "${FFMPEG_MAKE_CACHE_DIR}"
+      NO_DEFAULT_PATH
     )
     if(NOT FFMPEG_MAKE_EXECUTABLE)
       # Nothing usable found - fetch the same POSIX-runtime make.exe CI
