@@ -299,8 +299,6 @@ size_t CameraDriver::readFrames(size_t maxCount, std::vector<std::shared_ptr<AVP
     if (!fmtCtx || !readPacket || maxCount == 0)
         return 0;
 
-    AVStream* stream = fmtCtx->streams[streamIndex];
-
     size_t read = 0;
     while (read < maxCount)
     {
