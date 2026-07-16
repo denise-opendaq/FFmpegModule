@@ -16,7 +16,13 @@
 
 #pragma once
 #include <video_device_module/common.h>
+#include <video_device_module/camera_platform.h>
 #include <opendaq/module_impl.h>
+
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
@@ -35,6 +41,21 @@ public:
                                            const ComponentPtr& parent,
                                            const StringPtr& localId,
                                            const PropertyObjectPtr& config) override;
+
+private:
+    // Refreshes localDevices from a fresh platform enumeration, reassigning ids. Also returns
+    // the scan as an ordered id/entry list, since the platform enumeration order (e.g. matching
+    // USB port order) is worth preserving for display, which localDevices itself (an
+    // unordered_map) cannot do.
+    std::vector<std::pair<std::string, CameraDeviceEntry>> refreshLocalDeviceCache();
+    // Resolves a connection-string id (see CameraDeviceEntry / assignUniqueDeviceIds) to the
+    // actual OS device path, refreshing the cache once on a miss (e.g. a connection string
+    // handed to this module instance without a prior onGetAvailableDevices() call, such as one
+    // read back from a saved configuration). Throws NotFoundException if still unresolved.
+    std::string resolveLocalDeviceId(const std::string& id);
+
+    // Id -> enumerated entry, from the last scan (onGetAvailableDevices() or a cache-miss refresh).
+    std::unordered_map<std::string, CameraDeviceEntry> localDevices;
 };
 
 END_NAMESPACE_VIDEO_DEVICE_MODULE

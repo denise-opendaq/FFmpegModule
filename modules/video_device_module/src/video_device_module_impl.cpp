@@ -27,13 +27,44 @@ VideoDeviceModule::VideoDeviceModule(const ContextPtr& context)
     avdevice_register_all();
 }
 
+std::vector<std::pair<std::string, CameraDeviceEntry>> VideoDeviceModule::refreshLocalDeviceCache()
+{
+    const auto entries = listCameraDevices();
+    const auto ids = assignUniqueDeviceIds(entries);
+
+    localDevices.clear();
+    std::vector<std::pair<std::string, CameraDeviceEntry>> ordered;
+    ordered.reserve(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i)
+    {
+        localDevices.emplace(ids[i], entries[i]);
+        ordered.emplace_back(ids[i], entries[i]);
+    }
+    return ordered;
+}
+
+std::string VideoDeviceModule::resolveLocalDeviceId(const std::string& id)
+{
+    auto it = localDevices.find(id);
+    if (it == localDevices.end())
+    {
+        refreshLocalDeviceCache();
+        it = localDevices.find(id);
+    }
+
+    if (it == localDevices.end())
+        DAQ_THROW_EXCEPTION(NotFoundException, "Camera device '{}' not found", id);
+
+    return it->second.path;
+}
+
 ListPtr<IDeviceInfo> VideoDeviceModule::onGetAvailableDevices()
 {
     auto result = List<IDeviceInfo>();
 
-    for (const auto& entry : listCameraDevices())
+    for (const auto& [id, entry] : refreshLocalDeviceCache())
     {
-        auto deviceInfo = CameraDeviceImpl::CreateDeviceInfo(entry.path);
+        auto deviceInfo = CameraDeviceImpl::CreateDeviceInfo(entry, id);
         if (deviceInfo.assigned())
             result.pushBack(deviceInfo);
     }
@@ -61,10 +92,13 @@ DevicePtr VideoDeviceModule::onCreateDevice(const StringPtr& connectionString,
                                             const ComponentPtr& parent,
                                             const PropertyObjectPtr& config)
 {
-    std::string devicePath = CameraDeviceImpl::GetCameraPath(connectionString);
+    const std::string token = CameraDeviceImpl::GetCameraPath(connectionString);
 
-    if (!isNetworkCameraPath(devicePath))
+    std::string devicePath = token;
+    if (!isNetworkCameraPath(token))
     {
+        devicePath = resolveLocalDeviceId(token);
+
         const AVInputFormat* input_fmt = av_find_input_format(cameraInputFormatName());
         if (!input_fmt)
             DAQ_THROW_EXCEPTION(NotFoundException, "{} input format not found", cameraInputFormatName());

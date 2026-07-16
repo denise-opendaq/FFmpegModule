@@ -97,20 +97,33 @@ DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const std::string& cameraPath)
         return deviceInfo;
     }
 
-    for (const auto& entry : listCameraDevices())
+    const auto entries = listCameraDevices();
+    const auto ids = assignUniqueDeviceIds(entries);
+
+    for (size_t i = 0; i < entries.size(); ++i)
     {
-        if (entry.path != cameraPath)
+        if (entries[i].path != cameraPath)
             continue;
 
-        const StringPtr connectionString = fmt::format("{}://device{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, cameraPath);
+        const StringPtr connectionString = fmt::format("{}://device/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, ids[i]);
 
-        auto deviceInfo = DeviceInfo(connectionString, entry.name);
-        deviceInfo.setModel(entry.name);
+        auto deviceInfo = DeviceInfo(connectionString, entries[i].name);
+        deviceInfo.setModel(entries[i].name);
         deviceInfo.setDeviceType(CameraDeviceImpl::CreateType());
         return deviceInfo;
     }
 
     return nullptr;
+}
+
+DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const CameraDeviceEntry& entry, const std::string& id)
+{
+    const StringPtr connectionString = fmt::format("{}://device/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, id);
+
+    auto deviceInfo = DeviceInfo(connectionString, entry.name);
+    deviceInfo.setModel(entry.name);
+    deviceInfo.setDeviceType(CameraDeviceImpl::CreateType());
+    return deviceInfo;
 }
 
 std::string CameraDeviceImpl::GetCameraPath(const std::string& connectionString)
@@ -121,9 +134,12 @@ std::string CameraDeviceImpl::GetCameraPath(const std::string& connectionString)
 
     const std::string remainder = connectionString.substr(typePrefix.length());
 
-    // Local devices use an explicit "device" marker (e.g. "camera://device/dev/video0");
-    // anything else is already a full stream URL (e.g. "camera://rtsp://host/stream").
-    const std::string deviceMarker = "device";
+    // Local devices are addressed by a connection-string-safe id derived from their friendly
+    // name (e.g. "camera://device/Integrated_Webcam", see assignUniqueDeviceIds); resolving that
+    // id back to an actual OS device path is the caller's job (VideoDeviceModule keeps the
+    // id -> path mapping from its last enumeration). Anything else is already a full stream URL
+    // (e.g. "camera://rtsp://host/stream").
+    const std::string deviceMarker = "device/";
     if (remainder.rfind(deviceMarker, 0) == 0)
         return remainder.substr(deviceMarker.length());
 

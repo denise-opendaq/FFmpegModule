@@ -40,6 +40,14 @@ struct CameraDeviceEntry
 // (libavdevice's avfoundation backend does not implement programmatic device listing).
 std::vector<CameraDeviceEntry> listCameraDevices();
 
+// Assigns each entry a connection-string-safe id derived from its friendly name, unique within
+// the list (a numeric suffix is appended for repeats — e.g. two identical camera models both
+// named "Integrated Webcam" enumerate as "Integrated_Webcam" and "Integrated_Webcam_2"). Local
+// devices are addressed by this id rather than their raw OS device path, since paths on some
+// platforms (e.g. Windows dshow's "@device_pnp_\\?\usb#...") contain '?'/'#'/'&' characters that
+// collide with openDAQ's own connection-string option syntax.
+std::vector<std::string> assignUniqueDeviceIds(const std::vector<CameraDeviceEntry>& entries);
+
 // True if `path` is a network stream URL (e.g. "rtsp://...", "http://...") rather than a
 // local capture device identifier. Network streams are opened directly through libavformat
 // (protocol auto-probed), bypassing the platform's local capture backend entirely.

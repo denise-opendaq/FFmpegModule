@@ -19,6 +19,7 @@
 #include <video_device_module/common.h>
 #include <video_device_module/camera_driver.h>
 #include <video_device_module/camera_channel_impl.h>
+#include <video_device_module/camera_platform.h>
 #include <video_device_module/fallback_timer.h>
 #include <video_device_module/time_accumulator.h>
 
@@ -54,6 +55,7 @@ public:
     static PropertyObjectPtr CreateDefaultDeviceConfig();
     static DeviceTypePtr CreateType();
     static DeviceInfoPtr CreateDeviceInfo(const std::string& cameraPath);
+    static DeviceInfoPtr CreateDeviceInfo(const CameraDeviceEntry& entry, const std::string& id);
     static std::string GetCameraPath(const std::string& connectionString);
 
     DeviceInfoPtr onGetInfo() override;

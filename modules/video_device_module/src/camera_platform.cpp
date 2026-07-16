@@ -1,5 +1,8 @@
 #include <video_device_module/camera_platform.h>
 
+#include <cctype>
+#include <unordered_map>
+
 #if !defined(__APPLE__)
 extern "C"
 {
@@ -52,6 +55,32 @@ std::vector<CameraDeviceEntry> listCameraDevices()
 bool isNetworkCameraPath(const std::string& path)
 {
     return path.find("://") != std::string::npos;
+}
+
+namespace
+{
+std::string sanitizeDeviceId(const std::string& name)
+{
+    std::string result;
+    result.reserve(name.size());
+    for (unsigned char ch : name)
+        result += (std::isalnum(ch) || ch == '_' || ch == '-') ? static_cast<char>(ch) : '_';
+    return result.empty() ? "device" : result;
+}
+}  // namespace
+
+std::vector<std::string> assignUniqueDeviceIds(const std::vector<CameraDeviceEntry>& entries)
+{
+    std::unordered_map<std::string, int> seenCount;
+    std::vector<std::string> ids;
+    ids.reserve(entries.size());
+    for (const auto& entry : entries)
+    {
+        const std::string base = sanitizeDeviceId(entry.name);
+        const int count = ++seenCount[base];
+        ids.push_back(count == 1 ? base : base + "_" + std::to_string(count));
+    }
+    return ids;
 }
 
 END_NAMESPACE_VIDEO_DEVICE_MODULE
