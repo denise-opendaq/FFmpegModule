@@ -121,10 +121,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/msys2-make-extracted"
         PATTERNS "usr/bin/make.exe"
       )
+      # COPY, not RENAME: RENAME maps to Windows' MoveFile, which refuses to
+      # move a file across drives - and on GitHub's windows-2022 runners the
+      # checkout sits on D: while %LOCALAPPDATA% resolves to a path on C:,
+      # so a same-drive-only RENAME fails there.
       file(MAKE_DIRECTORY "${FFMPEG_MAKE_CACHE_DIR}")
-      file(RENAME
+      file(COPY
         "${CMAKE_CURRENT_BINARY_DIR}/msys2-make-extracted/usr/bin/make.exe"
-        "${FFMPEG_MAKE_CACHE_DIR}/make.exe"
+        DESTINATION "${FFMPEG_MAKE_CACHE_DIR}"
       )
       find_program(FFMPEG_MAKE_EXECUTABLE
         NAMES make.exe

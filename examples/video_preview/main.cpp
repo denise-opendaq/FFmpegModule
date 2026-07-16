@@ -30,23 +30,6 @@ SignalPtr findFbSignal(const FunctionBlockPtr& fb, const std::string& localId)
     return {};
 }
 
-bool waitForComponentOk(const ComponentPtr& component, std::chrono::seconds timeout)
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (component.getStatusContainer().getStatus("ComponentStatus") == ComponentStatus::Ok)
-            return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    return false;
-}
-
-void printComponentError(const ComponentPtr& component, const char* label)
-{
-    const auto status = component.getStatusContainer().getStatus("ComponentStatus");
-    std::cerr << label << " failed (status=" << static_cast<int>(status) << ")\n";
-}
 }  // namespace
 
 int main(int /*argc*/, const char* /*argv*/[])
