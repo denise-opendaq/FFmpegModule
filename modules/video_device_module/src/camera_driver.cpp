@@ -1,7 +1,11 @@
 #include <video_device_module/camera_driver.h>
 #include <video_device_module/camera_platform.h>
 
+#include <coretypes/ratio_factory.h>
+
 #include <cctype>
+#include <cstdarg>
+#include <cstdio>
 #include <string_view>
 
 extern "C"
@@ -12,7 +16,81 @@ extern "C"
 #include <libavutil/pixdesc.h>
 }
 
+namespace
+{
+// libavformat/libavdevice error codes for a failed device open are frequently a generic
+// "unknown error"; the actionable detail (e.g. the HRESULT-derived reason dshow logs when it
+// can't build its capture graph) only appears in the backend's own av_log() line. Capture the
+// last warning/error line here so CameraDriver::open() can surface it.
+thread_local std::string g_lastAvLogLine;
+
+void avLogCaptureCallback(void* avcl, int level, const char* fmt, va_list args)
+{
+    if (level > AV_LOG_WARNING)
+        return;
+
+    char buffer[512];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    std::string_view msg(buffer);
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+        msg.remove_suffix(1);
+
+    if (!msg.empty())
+        g_lastAvLogLine.assign(msg);
+}
+
+std::string describeAvError(int errnum)
+{
+    char buffer[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_strerror(errnum, buffer, sizeof(buffer));
+
+    if (!g_lastAvLogLine.empty())
+    {
+        std::string combined = g_lastAvLogLine + " (" + buffer + ")";
+        g_lastAvLogLine.clear();
+        return combined;
+    }
+
+    return buffer;
+}
+}  // namespace
+
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
+
+namespace
+{
+constexpr double kMaxReasonableFrameRateHz = 240.0;
+
+bool isReasonableFrameRate(const AVRational& rate)
+{
+    if (rate.num <= 0 || rate.den <= 0)
+        return false;
+
+    const double fps = av_q2d(rate);
+    return fps > 0.0 && fps <= kMaxReasonableFrameRateHz;
+}
+
+Float resolveFrameRateHz(AVFormatContext* fmtCtx, AVStream* stream)
+{
+    if (isReasonableFrameRate(stream->avg_frame_rate))
+        return static_cast<Float>(av_q2d(stream->avg_frame_rate));
+
+    if (isReasonableFrameRate(stream->r_frame_rate))
+        return static_cast<Float>(av_q2d(stream->r_frame_rate));
+
+    const AVRational guessed = av_guess_frame_rate(fmtCtx, stream, nullptr);
+    if (isReasonableFrameRate(guessed))
+        return static_cast<Float>(av_q2d(guessed));
+
+    // avfoundation reports stream time_base in microseconds (1/1'000'000). When avg/r_frame_rate
+    // are unset, av_guess_frame_rate() inverts that time_base and returns ~1e6 fps.
+    if (std::string_view(cameraInputFormatName()) == "avfoundation")
+        return 30.0f;
+
+    return 0.0f;
+}
+}  // namespace
 
 CameraDriver::CameraDriver() = default;
 
@@ -55,15 +133,6 @@ std::string CameraDriver::formatNativeCodecName(int codecId, int pixelFormat)
     return "BINARY";
 }
 
-uint64_t CameraDriver::packetPtsToNs(int64_t pts, int num, int den)
-{
-    if (pts == AV_NOPTS_VALUE || den == 0)
-        return 0;
-
-    const auto seconds = av_q2d(AVRational{num, den}) * static_cast<double>(pts);
-    return static_cast<uint64_t>(seconds * 1'000'000'000.0 + 0.5);
-}
-
 int CameraDriver::interruptCallback(void* opaque)
 {
     return static_cast<CameraDriver*>(opaque)->interruptRequested.load(std::memory_order_relaxed) ? 1 : 0;
@@ -78,6 +147,14 @@ bool CameraDriver::open(const std::string& devicePath)
 {
     close();
     interruptRequested.store(false, std::memory_order_relaxed);
+    lastError.clear();
+    g_lastAvLogLine.clear();
+
+    // Raise the log level enough for the backend (e.g. dshow) to actually emit its own
+    // diagnostic line on failure, and capture it instead of printing to stderr: the error
+    // code alone from avformat_open_input() is frequently just a generic "unknown error".
+    av_log_set_level(AV_LOG_WARNING);
+    av_log_set_callback(&avLogCaptureCallback);
 
     const bool isNetworkStream = isNetworkCameraPath(devicePath);
 
@@ -90,12 +167,18 @@ bool CameraDriver::open(const std::string& devicePath)
         avdevice_register_all();
         inputFmt = av_find_input_format(cameraInputFormatName());
         if (!inputFmt)
+        {
+            lastError = std::string(cameraInputFormatName()) + " input format not found";
             return false;
+        }
     }
 
     AVFormatContext* rawCtx = avformat_alloc_context();
     if (!rawCtx)
+    {
+        lastError = "avformat_alloc_context failed";
         return false;
+    }
 
     rawCtx->flags |= AVFMT_FLAG_NONBLOCK;
     rawCtx->interrupt_callback.callback = &CameraDriver::interruptCallback;
@@ -118,19 +201,28 @@ bool CameraDriver::open(const std::string& devicePath)
         av_dict_set(&options, "framerate", "30", 0);
     }
 
-    const int openResult = avformat_open_input(&rawCtx, devicePath.c_str(), inputFmt, &options);
+    // dshow's demuxer parses its filename argument for "video=" / "audio=" tokens rather than
+    // taking the device name directly, so the enumerated device name (e.g. "@device_pnp_...")
+    // has to be wrapped in that syntax; v4l2/avfoundation take the device path as-is.
+    std::string openTarget = devicePath;
+    if (!isNetworkStream && std::string_view(cameraInputFormatName()) == "dshow")
+        openTarget = "video=" + devicePath;
+
+    const int openResult = avformat_open_input(&rawCtx, openTarget.c_str(), inputFmt, &options);
     av_dict_free(&options);
 
     if (openResult < 0)
     {
+        lastError = "avformat_open_input failed: " + describeAvError(openResult);
         avformat_free_context(rawCtx);
         return false;
     }
 
     fmtCtx.reset(rawCtx);
 
-    if (avformat_find_stream_info(fmtCtx.get(), nullptr) < 0)
+    if (const int ret = avformat_find_stream_info(fmtCtx.get(), nullptr); ret < 0)
     {
+        lastError = "avformat_find_stream_info failed: " + describeAvError(ret);
         close();
         return false;
     }
@@ -138,6 +230,7 @@ bool CameraDriver::open(const std::string& devicePath)
     streamIndex = av_find_best_stream(fmtCtx.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (streamIndex < 0)
     {
+        lastError = "no video stream found: " + describeAvError(streamIndex);
         close();
         return false;
     }
@@ -147,14 +240,15 @@ bool CameraDriver::open(const std::string& devicePath)
 
     if (codecpar->width == 0 || codecpar->height == 0)
     {
+        lastError = "video stream reported zero width/height";
         close();
         return false;
     }
 
-    const AVRational framerate = av_guess_frame_rate(fmtCtx.get(), stream, nullptr);
-    const Float frameRateHz = av_q2d(framerate);
+    const Float frameRateHz = resolveFrameRateHz(fmtCtx.get(), stream);
     if (frameRateHz <= 0.0f)
     {
+        lastError = "could not determine a valid frame rate";
         close();
         return false;
     }
@@ -166,9 +260,12 @@ bool CameraDriver::open(const std::string& devicePath)
     streamInfo.nativePixelFormat = codecpar->format;
     streamInfo.nativeFormat = formatNativeCodecName(codecpar->codec_id, codecpar->format);
 
+    streamTimeRatio = Ratio(stream->time_base.num, stream->time_base.den);
+
     readPacket.reset(av_packet_alloc());
     if (!readPacket)
     {
+        lastError = "av_packet_alloc failed";
         close();
         return false;
     }
@@ -181,6 +278,7 @@ void CameraDriver::close()
     readPacket.reset();
     fmtCtx.reset();
     streamIndex = -1;
+    streamTimeRatio = nullptr;
     streamInfo = {};
 }
 
@@ -191,7 +289,12 @@ const AVCodecParameters* CameraDriver::getCodecParameters() const
     return fmtCtx->streams[streamIndex]->codecpar;
 }
 
-size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out)
+RatioPtr CameraDriver::getStreamTimeRatio() const
+{
+    return streamTimeRatio;
+}
+
+size_t CameraDriver::readFrames(size_t maxCount, std::vector<std::shared_ptr<AVPacket>>& out)
 {
     if (!fmtCtx || !readPacket || maxCount == 0)
         return 0;
@@ -217,7 +320,6 @@ size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out
             continue;
         }
 
-        CapturedFrame frame;
         auto framePacket = std::shared_ptr<AVPacket>(av_packet_alloc(), shared_av_packet_deleter);
         if (!framePacket)
         {
@@ -226,12 +328,7 @@ size_t CameraDriver::readFrames(size_t maxCount, std::vector<CapturedFrame>& out
         }
 
         av_packet_move_ref(framePacket.get(), readPacket.get());
-        frame.packet = std::move(framePacket);
-
-        const AVRational timeBase = fmtCtx->streams[streamIndex]->time_base;
-        frame.timestampNs = packetPtsToNs(frame.packet->pts, timeBase.num, timeBase.den);
-
-        out.push_back(std::move(frame));
+        out.push_back(std::move(framePacket));
         ++read;
     }
 

@@ -1,6 +1,6 @@
 set(TEST_APP test_video_device_module)
 
-if(NOT TARGET daq::test_utils)
+if(NOT TARGET ${OPENDAQ_SDK_TARGET_NAMESPACE}::opendaq_test_utils)
     message(FATAL_ERROR "VIDEO_DEVICE_MODULE tests require OPENDAQ_ENABLE_TEST_UTILS=ON")
 endif()
 
@@ -10,6 +10,10 @@ set(TEST_SOURCES
     video_device_module_test.cpp
 )
 
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    list(APPEND TEST_SOURCES video_display_fb_impl_test.cpp)
+endif()
+
 add_executable(${TEST_APP} ${TEST_SOURCES})
 
 target_include_directories(${TEST_APP} PRIVATE
@@ -17,7 +21,7 @@ target_include_directories(${TEST_APP} PRIVATE
 )
 
 target_link_libraries(${TEST_APP} PRIVATE
-    daq::test_utils
+    ${OPENDAQ_SDK_TARGET_NAMESPACE}::opendaq_test_utils
     gtest
     video_device_module
     ffmpeg

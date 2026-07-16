@@ -1,10 +1,8 @@
 #include <video_device_module/camera_device_impl.h>
-#include <video_device_module/camera_platform.h>
-#include <video_device_module/video_device_module_impl.h>
+#include <video_device_module/module_dll.h>
 
 #include <gtest/gtest.h>
 #include <opendaq/input_port_factory.h>
-#include <opendaq/module_impl.h>
 #include <opendaq/opendaq.h>
 
 #include <chrono>
@@ -21,15 +19,27 @@ ContextPtr createContext()
     return Context(Scheduler(logger), logger, TypeManager(), nullptr, nullptr);
 }
 
-ModulePtr createVideoDeviceModule(const ContextPtr& context)
+// Goes through the module's exported C entry point rather than instantiating VideoDeviceModule
+// directly: internal implementation classes aren't exported from the module's shared library
+// (visibility is hidden by default there; only the plugin's C ABI entry points are), so tests
+// only ever reach the module through its public IModule/IDevice/IFunctionBlock surface.
+ModulePtr CreateModule(const ContextPtr& context)
 {
-    return createWithImplementation<IModule, VideoDeviceModule>(context);
+    ModulePtr module;
+    createVideoDeviceModule(&module, context);
+    return module;
+}
+
+bool isLocalDeviceConnectionString(const std::string& connectionString)
+{
+    static const std::string prefix = std::string(CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX) + "://device";
+    return connectionString.rfind(prefix, 0) == 0;
 }
 }  // namespace
 
 TEST(VideoDeviceModuleTest, GetAvailableDeviceTypesContainsCameraDevice)
 {
-    const auto module = createVideoDeviceModule(createContext());
+    const auto module = CreateModule(createContext());
 
     DictPtr<IString, IDeviceType> deviceTypes;
     ASSERT_NO_THROW(deviceTypes = module.getAvailableDeviceTypes());
@@ -42,36 +52,73 @@ TEST(VideoDeviceModuleTest, GetAvailableDeviceTypesContainsCameraDevice)
 
 TEST(VideoDeviceModuleTest, GetAvailableDevicesDoesNotThrow)
 {
-    const auto module = createVideoDeviceModule(createContext());
+    const auto module = CreateModule(createContext());
 
     // Enumerates real cameras on the current OS (v4l2 on Linux, AVFoundation on macOS,
-    // dshow on Windows). On machines without a camera this returns an empty, but valid, list.
+    // dshow on Windows), plus a fixed example IP camera entry. On machines without a local
+    // camera this still returns that example, never an empty list.
     ListPtr<IDeviceInfo> devices;
     ASSERT_NO_THROW(devices = module.getAvailableDevices());
     ASSERT_TRUE(devices.assigned());
 
     for (const DeviceInfoPtr& info : devices)
     {
-        const std::string connectionString = info.getConnectionString();
-        ASSERT_EQ(connectionString.rfind(std::string(CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX) + "://device", 0), 0u);
         ASSERT_TRUE(info.getDeviceType().assigned());
         ASSERT_EQ(info.getDeviceType().getId(), CAMERA_DEVICE_TYPE_ID);
+        std::cout << "Found camera device: " << info.getName() << " (" << info.getConnectionString() << ")" << std::endl;
+
+        const std::string connectionString = info.getConnectionString();
+        ASSERT_EQ(connectionString.rfind(std::string(CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX) + "://", 0), 0u);
     }
+}
+
+TEST(VideoDeviceModuleTest, GetAvailableDevicesIncludesIpCameraExample)
+{
+    // Network cameras aren't locally enumerable, so the module always lists a fixed public RTSP
+    // stream as an example network camera path (see VideoDeviceModule::onGetAvailableDevices).
+    const std::string streamUrl = "rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream";
+    const std::string expectedConnectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl);
+
+    const auto module = CreateModule(createContext());
+
+    ListPtr<IDeviceInfo> devices;
+    ASSERT_NO_THROW(devices = module.getAvailableDevices());
+
+    DeviceInfoPtr ipCameraInfo;
+    for (const DeviceInfoPtr& info : devices)
+    {
+        if (info.getConnectionString() == expectedConnectionString)
+        {
+            ipCameraInfo = info;
+            break;
+        }
+    }
+
+    ASSERT_TRUE(ipCameraInfo.assigned());
+    ASSERT_EQ(ipCameraInfo.getName(), streamUrl);
 }
 
 TEST(VideoDeviceModuleTest, SelfClockGeneratesFramesWithoutRootDevice)
 {
-    const auto devices = listCameraDevices();
-    if (devices.empty())
+    const auto context = createContext();
+    const auto module = CreateModule(context);
+
+    DeviceInfoPtr localDeviceInfo;
+    for (const DeviceInfoPtr& info : module.getAvailableDevices())
+    {
+        if (isLocalDeviceConnectionString(info.getConnectionString()))
+        {
+            localDeviceInfo = info;
+            break;
+        }
+    }
+    if (!localDeviceInfo.assigned())
         GTEST_SKIP() << "No camera device available on this machine";
 
-    // createContext() attaches no root device, so CameraDeviceImpl cannot find a parent
-    // time signal and must fall back to self-clocking its own acquisition.
-    const auto context = createContext();
-    const auto device = createWithImplementation<IDevice, CameraDeviceImpl>(
-        StringPtr(devices.front().path), CameraDeviceImpl::CreateDefaultDeviceConfig(), context, nullptr, "SelfClockCamera", "SelfClockCamera");
-
-    ASSERT_EQ(device.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Ok);
+    // createContext() attaches no root device, so the device cannot find a parent time signal
+    // and must fall back to self-clocking its own acquisition.
+    const auto device = module.createDevice(localDeviceInfo.getConnectionString(), nullptr, PropertyObject());
+    ASSERT_EQ(device.getStatusContainer().getStatus("ComponentStatus"), ComponentStatus::Ok) << "Local camera device could not be opened: " << localDeviceInfo.getConnectionString();
 
     SignalConfigPtr rawVideoSignal;
     for (const auto& ch : device.getChannels())
@@ -104,45 +151,17 @@ TEST(VideoDeviceModuleTest, SelfClockGeneratesFramesWithoutRootDevice)
     ASSERT_TRUE(receivedData);
 }
 
-TEST(VideoDeviceModuleTest, GetCameraPathRoundTripsConnectionString)
-{
-    const std::string devicePath = "/dev/video0";
-    const std::string connectionString = fmt::format("{}://device{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, devicePath);
-
-    ASSERT_EQ(CameraDeviceImpl::GetCameraPath(connectionString), devicePath);
-}
-
-TEST(VideoDeviceModuleTest, GetCameraPathRoundTripsIpConnectionString)
-{
-    const std::string streamUrl = "rtsp://192.168.1.50:554/stream1";
-    const std::string connectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl);
-
-    const std::string path = CameraDeviceImpl::GetCameraPath(connectionString);
-    ASSERT_EQ(path, streamUrl);
-    ASSERT_TRUE(isNetworkCameraPath(path));
-}
-
-TEST(VideoDeviceModuleTest, CreateDeviceInfoForIpCameraDoesNotRequireEnumeration)
-{
-    const std::string streamUrl = "rtsp://192.168.1.50:554/stream1";
-
-    const auto info = CameraDeviceImpl::CreateDeviceInfo(streamUrl);
-    ASSERT_TRUE(info.assigned());
-    ASSERT_EQ(info.getConnectionString(),
-              fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl));
-    ASSERT_EQ(info.getName(), streamUrl);
-}
-
 TEST(VideoDeviceModuleTest, IpCameraStreamProducesFrames)
 {
     // A real public RTSP stream, used here purely as connectivity fixture. Skips rather than
     // fails if it's unreachable (no network in this environment, or the stream went down)
     // since this is an external dependency, not something this module controls.
     const std::string streamUrl = "rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream";
+    const std::string connectionString = fmt::format("{}://{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, streamUrl);
 
     const auto context = createContext();
-    const auto device = createWithImplementation<IDevice, CameraDeviceImpl>(
-        StringPtr(streamUrl), CameraDeviceImpl::CreateDefaultDeviceConfig(), context, nullptr, "IpCamera", "IpCamera");
+    const auto module = CreateModule(context);
+    const auto device = module.createDevice(connectionString, nullptr, PropertyObject());
 
     if (device.getStatusContainer().getStatus("ComponentStatus") != ComponentStatus::Ok)
         GTEST_SKIP() << "IP camera stream not reachable: " << streamUrl;

@@ -12,7 +12,27 @@
 #include <opendaq/reference_domain_info_factory.h>
 #include <opendaq/signal_factory.h>
 
-#include <chrono>
+extern "C"
+{
+#include <libavcodec/packet.h>
+#include <libavutil/avutil.h>
+}
+
+namespace
+{
+uint64_t streamPtsToNanoseconds(int64_t pts, const daq::RatioPtr& fromRatio, const daq::RatioPtr& toRatio)
+{
+    if (pts == AV_NOPTS_VALUE)
+        return 0;
+
+    if (!fromRatio.assigned() || !toRatio.assigned())
+        return 0;
+
+    auto convertionRatio = daq::Ratio(pts, 1) * (fromRatio / toRatio).simplify();
+
+    return static_cast<uint64_t>(convertionRatio);
+}
+}  // namespace
 
 BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
@@ -29,7 +49,7 @@ CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
     initComponentStatus();
     if (!driver.open(this->cameraPath))
     {
-        setComponentStatusWithMessage(ComponentStatus::Error, "Failed to open camera driver");
+        setComponentStatusWithMessage(ComponentStatus::Error, fmt::format("Failed to open camera driver: {}", driver.getLastError()));
         return;
     }
 
@@ -37,13 +57,18 @@ CameraDeviceImpl::CameraDeviceImpl(const StringPtr& cameraPath,
     initSignals();
     initChannels();
 
-    if (needsSelfClock)
-        startSelfClock();
+    if (!deviceTimeInputPort.assigned())
+    {
+        fallbackTimer.start(driver.getStreamInfo().frameRateHz, [this] { generatePacket(1); });
+    }
 }
 
 CameraDeviceImpl::~CameraDeviceImpl()
 {
-    stopSelfClock();
+    // Network sources (RTSP/...) can block inside generatePacket()'s frame read; interrupt
+    // that read before joining the fallback timer thread.
+    driver.requestInterrupt();
+    fallbackTimer.stop();
 }
 
 PropertyObjectPtr CameraDeviceImpl::CreateDefaultDeviceConfig()
@@ -72,20 +97,33 @@ DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const std::string& cameraPath)
         return deviceInfo;
     }
 
-    for (const auto& entry : listCameraDevices())
+    const auto entries = listCameraDevices();
+    const auto ids = assignUniqueDeviceIds(entries);
+
+    for (size_t i = 0; i < entries.size(); ++i)
     {
-        if (entry.path != cameraPath)
+        if (entries[i].path != cameraPath)
             continue;
 
-        const StringPtr connectionString = fmt::format("{}://device{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, cameraPath);
+        const StringPtr connectionString = fmt::format("{}://device/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, ids[i]);
 
-        auto deviceInfo = DeviceInfo(connectionString, entry.name);
-        deviceInfo.setModel(entry.name);
+        auto deviceInfo = DeviceInfo(connectionString, entries[i].name);
+        deviceInfo.setModel(entries[i].name);
         deviceInfo.setDeviceType(CameraDeviceImpl::CreateType());
         return deviceInfo;
     }
 
     return nullptr;
+}
+
+DeviceInfoPtr CameraDeviceImpl::CreateDeviceInfo(const CameraDeviceEntry& entry, const std::string& id)
+{
+    const StringPtr connectionString = fmt::format("{}://device/{}", CAMERA_DEVICE_TYPE_CONNECTION_STRING_PREFIX, id);
+
+    auto deviceInfo = DeviceInfo(connectionString, entry.name);
+    deviceInfo.setModel(entry.name);
+    deviceInfo.setDeviceType(CameraDeviceImpl::CreateType());
+    return deviceInfo;
 }
 
 std::string CameraDeviceImpl::GetCameraPath(const std::string& connectionString)
@@ -96,9 +134,12 @@ std::string CameraDeviceImpl::GetCameraPath(const std::string& connectionString)
 
     const std::string remainder = connectionString.substr(typePrefix.length());
 
-    // Local devices use an explicit "device" marker (e.g. "camera://device/dev/video0");
-    // anything else is already a full stream URL (e.g. "camera://rtsp://host/stream").
-    const std::string deviceMarker = "device";
+    // Local devices are addressed by a connection-string-safe id derived from their friendly
+    // name (e.g. "camera://device/Integrated_Webcam", see assignUniqueDeviceIds); resolving that
+    // id back to an actual OS device path is the caller's job (VideoDeviceModule keeps the
+    // id -> path mapping from its last enumeration). Anything else is already a full stream URL
+    // (e.g. "camera://rtsp://host/stream").
+    const std::string deviceMarker = "device/";
     if (remainder.rfind(deviceMarker, 0) == 0)
         return remainder.substr(deviceMarker.length());
 
@@ -134,6 +175,22 @@ void CameraDeviceImpl::initProperties()
     objPtr.addProperty(timeOffsetProp);
     objPtr.getOnPropertyValueWrite("TimeOffset") +=
         [this](PropertyObjectPtr& /*obj*/, PropertyValueEventArgsPtr& args) { onTimeOffsetChanged(args.getValue()); };
+
+    objPtr.addProperty(StringPropertyBuilder("NativeFormat", "unknown").setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("NativeCodecId", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("NativePixelFormat", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("FrameWidth", 0).setReadOnly(true).build());
+    objPtr.addProperty(IntPropertyBuilder("FrameHeight", 0).setReadOnly(true).build());
+    objPtr.addProperty(FloatPropertyBuilder("FrameRate", 0.0f).setReadOnly(true).build());
+
+    const auto streamingInfo = driver.getStreamInfo();
+    auto protectedObjPtr = objPtr.asPtr<IPropertyObjectProtected>(true);
+    protectedObjPtr.setProtectedPropertyValue("NativeFormat", streamingInfo.nativeFormat);
+    protectedObjPtr.setProtectedPropertyValue("NativeCodecId", streamingInfo.nativeCodecId);
+    protectedObjPtr.setProtectedPropertyValue("NativePixelFormat", streamingInfo.nativePixelFormat);
+    protectedObjPtr.setProtectedPropertyValue("FrameWidth", streamingInfo.width);
+    protectedObjPtr.setProtectedPropertyValue("FrameHeight", streamingInfo.height);
+    protectedObjPtr.setProtectedPropertyValue("FrameRate", streamingInfo.frameRateHz);
 }
 
 void CameraDeviceImpl::initSignals()
@@ -179,7 +236,6 @@ void CameraDeviceImpl::initSignals()
 
     LOG_I("No parent time signal found, self-clocking camera acquisition instead");
     setComponentStatus(ComponentStatus::Ok);
-    needsSelfClock = true;
 }
 
 void CameraDeviceImpl::initChannels()
@@ -278,23 +334,21 @@ void CameraDeviceImpl::handleDataPacket(const DataPacketPtr& packet)
 
 void CameraDeviceImpl::generatePacket(SizeT sampleCount)
 {
-    std::vector<CapturedFrame> frames;
-    frames.reserve(sampleCount);
+    std::vector<std::shared_ptr<AVPacket>> packets;
+    packets.reserve(sampleCount);
 
-    const size_t framesRead = driver.readFrames(sampleCount, frames);
+    const size_t framesRead = driver.readFrames(sampleCount, packets);
     if (framesRead == 0)
     {
-        LOG_W("No frames read from camera for {}", sampleCount);
+        // LOG_W("No frames read from camera for {}", sampleCount);
         return;
     }
 
+    const auto streamTimeRatio = driver.getStreamTimeRatio();
     const uint64_t offsetNs = static_cast<uint64_t>(timeOffsetNs);
     auto timestamps = std::make_unique<uint64_t[]>(framesRead);
     for (size_t i = 0; i < framesRead; ++i)
-    {
-        timestamps[i] = frames[i].timestampNs + offsetNs;
-        frames[i].timestampNs = timestamps[i];
-    }
+        timestamps[i] = streamPtsToNanoseconds(packets[i]->pts, streamTimeRatio, getRatio()) + offsetNs;
 
     auto domainPacket = DataPacketWithExternalMemory(
         nullptr,
@@ -304,56 +358,7 @@ void CameraDeviceImpl::generatePacket(SizeT sampleCount)
         Deleter([](void* ptr) { delete[] static_cast<uint64_t*>(ptr); }));
 
     timeSignal.sendPacket(domainPacket);
-    channel->generatePacket(domainPacket, frames);
-}
-
-void CameraDeviceImpl::startSelfClock()
-{
-    selfClockThread = std::thread(&CameraDeviceImpl::selfClockLoop, this);
-}
-
-void CameraDeviceImpl::stopSelfClock()
-{
-    if (!selfClockThread.joinable())
-        return;
-
-    {
-        auto lock = getUniqueLock();
-        stopSelfClockRequested = true;
-    }
-    selfClockCv.notify_one();
-    // Network sources (RTSP/...) can block for a while inside generatePacket()'s frame read;
-    // interrupt it so join() below doesn't wait on however long that read would otherwise take.
-    driver.requestInterrupt();
-    selfClockThread.join();
-}
-
-void CameraDeviceImpl::selfClockLoop()
-{
-    const auto frameRateHz = driver.getStreamInfo().frameRateHz;
-    const auto framePeriod =
-        frameRateHz > 0.0f
-            ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<Float>(1.0f / frameRateHz))
-            : std::chrono::seconds(1);
-
-    auto nextTick = std::chrono::steady_clock::now();
-
-    while (true)
-    {
-        {
-            // Only hold the device lock while waiting/checking the stop flag: generatePacket()
-            // below can block on network I/O, and must not do so while holding this lock, or
-            // stopSelfClock() (called from the destructor, on another thread) would deadlock
-            // trying to acquire the same lock just to request the stop.
-            auto lock = getUniqueLock();
-            nextTick += framePeriod;
-            selfClockCv.wait_until(lock, nextTick, [this] { return stopSelfClockRequested; });
-            if (stopSelfClockRequested)
-                break;
-        }
-
-        generatePacket(1);
-    }
+    channel->generatePacket(domainPacket, packets);
 }
 
 uint64_t CameraDeviceImpl::onGetTicksSinceOrigin()

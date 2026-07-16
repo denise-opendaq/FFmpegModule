@@ -30,6 +30,7 @@ opendaq_setup_common_build_options()
 opendaq_setup_project_specific_build_options(${REPO_OPTION_PREFIX})
 option(${REPO_OPTION_PREFIX}_ENABLE_EXAMPLE_APP "Enable ${REPO_NAME} example applications" ${PROJECT_IS_TOP_LEVEL})
 option(${REPO_OPTION_PREFIX}_ENABLE_TESTS "Enable ${REPO_NAME} testing" ${PROJECT_IS_TOP_LEVEL})
+option(${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY "Enable video display function block (requires SFML)" ON)
 
 opendaq_common_compile_targets_settings()
 opendaq_setup_compiler_flags(${REPO_OPTION_PREFIX})
@@ -79,3 +80,7 @@ add_subdirectory(external/boost)
 
 add_subdirectory(external)
 add_subdirectory(modules)
+
+if (${REPO_OPTION_PREFIX}_ENABLE_EXAMPLE_APP)
+    add_subdirectory(examples)
+endif()

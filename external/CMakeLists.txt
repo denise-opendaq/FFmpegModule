@@ -18,5 +18,14 @@ endif()
 message(STATUS "Including ffmpeg...")
 add_subdirectory(ffmpeg EXCLUDE_FROM_ALL)
 
+if (${REPO_OPTION_PREFIX}_ENABLE_VIDEO_DISPLAY)
+    if (NOT TARGET SFML::Graphics)
+        message(STATUS "Including SFML for video display...")
+        add_subdirectory(sfml EXCLUDE_FROM_ALL)
+    else()
+        message(STATUS "Reusing existing SFML target for video display")
+    endif()
+endif()
+
 opendaq_set_cmake_mode(${_FFMPEG_CMAKE_MODERN_MODE_SAVED})
 

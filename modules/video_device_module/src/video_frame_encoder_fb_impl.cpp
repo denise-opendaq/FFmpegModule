@@ -335,7 +335,7 @@ void VideoFrameEncoderFbImpl::processTranscode(const DataPacketPtr& packet)
     }
     else
     {
-        rawFrame->format = nativePixelFormat;
+        rawFrame->format = static_cast<int>(nativePixelFormat);
         rawFrame->width = static_cast<int>(frameWidth);
         rawFrame->height = static_cast<int>(frameHeight);
 
@@ -449,7 +449,7 @@ void VideoFrameEncoderFbImpl::initDecoder()
     if (nativeCodecId == AV_CODEC_ID_RAWVIDEO)
     {
         rawFrame.reset(av_frame_alloc());
-        rawFrame->format = nativePixelFormat;
+        rawFrame->format = static_cast<int>(nativePixelFormat);
         rawFrame->width = static_cast<int>(frameWidth);
         rawFrame->height = static_cast<int>(frameHeight);
         return;
@@ -539,11 +539,11 @@ void VideoFrameEncoderFbImpl::applyFrameQuality(AVDictionary** options)
     if (encodeCodecId == AV_CODEC_ID_MJPEG)
     {
         encodecCtx->flags |= AV_CODEC_FLAG_QSCALE;
-        encodecCtx->global_quality = FF_QP2LAMBDA * (11 - encodeQuality);
+        encodecCtx->global_quality = static_cast<int>(FF_QP2LAMBDA * (11 - encodeQuality));
     }
     else if (encodeCodecId == AV_CODEC_ID_PNG)
     {
-        const int compressionLevel = 10 - encodeQuality;
+        const int compressionLevel = static_cast<int>(10 - encodeQuality);
         av_dict_set(options, "compression_level", std::to_string(compressionLevel).c_str(), 0);
     }
     else if (encodeCodecId == AV_CODEC_ID_RADIANCE_HDR)

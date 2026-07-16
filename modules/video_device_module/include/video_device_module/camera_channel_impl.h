@@ -28,7 +28,7 @@ BEGIN_NAMESPACE_VIDEO_DEVICE_MODULE
 
 DECLARE_OPENDAQ_INTERFACE(IVideoChannel, IBaseObject)
 {
-    virtual void generatePacket(IDataPacket* domainPacket, std::vector<CapturedFrame>& frames) = 0;
+    virtual void generatePacket(IDataPacket* domainPacket, std::vector<std::shared_ptr<AVPacket>>& packets) = 0;
 };
 
 class CameraChannelImpl final : public ChannelImpl<IVideoChannel>
@@ -44,7 +44,7 @@ public:
                                const SignalPtr& rootDomainSignal,
                                CameraDriver& driver);
 
-    void generatePacket(IDataPacket* domainPacket, std::vector<CapturedFrame>& frames) override;
+    void generatePacket(IDataPacket* domainPacket, std::vector<std::shared_ptr<AVPacket>>& packets) override;
 
 protected:
     void initSignals(const SignalPtr& domainSignal);
